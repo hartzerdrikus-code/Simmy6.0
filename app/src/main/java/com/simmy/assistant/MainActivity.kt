@@ -319,8 +319,11 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             text.contains("dankie") ->
                 reply("You're welcome! Geen probleem.")
 
-            else ->
-                webSearch(raw)
+            else -> {
+    if (!openAppByName(raw)) {
+        webSearch(raw)
+    }
+}
         }
     }
 

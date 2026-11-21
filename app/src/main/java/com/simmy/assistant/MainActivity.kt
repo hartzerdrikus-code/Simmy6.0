@@ -572,3 +572,58 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         super.onDestroy()
     }
 }
+
+private fun openAppByName(raw: String): Boolean {
+    val text = raw.lowercase(Locale.ROOT).trim()
+
+    val prefixes = listOf(
+        "open ",
+        "launch ",
+        "start ",
+        "maak ",
+        "maak die "
+    )
+
+    val appName = prefixes.firstOrNull {
+        text.startsWith(it)
+    }?.let {
+        text.removePrefix(it).trim()
+    } ?: return false
+
+    if (appName.isBlank()) return false
+
+    val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+        addCategory(Intent.CATEGORY_LAUNCHER)
+    }
+
+    val apps = packageManager.queryIntentActivities(
+        launcherIntent,
+        0
+    )
+
+    val matchingApp = apps.firstOrNull {
+        it.loadLabel(packageManager)
+            .toString()
+            .lowercase(Locale.ROOT) == appName
+    } ?: apps.firstOrNull {
+        it.loadLabel(packageManager)
+            .toString()
+            .lowercase(Locale.ROOT)
+            .contains(appName)
+    }
+
+    val packageName =
+        matchingApp?.activityInfo?.packageName
+            ?: return false
+
+    val launchIntent =
+        packageManager.getLaunchIntentForPackage(packageName)
+            ?: return false
+
+    status.text = "Opening ${matchingApp.loadLabel(packageManager)}..."
+    speak("Opening ${matchingApp.loadLabel(packageManager)}")
+
+    startActivity(launchIntent)
+
+    return true
+}

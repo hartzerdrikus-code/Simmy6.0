@@ -574,7 +574,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
         tts?.shutdown()
         super.onDestroy()
     }
-}
+
 
 private fun openAppByName(raw: String): Boolean {
     val text = raw.lowercase(Locale.ROOT).trim()

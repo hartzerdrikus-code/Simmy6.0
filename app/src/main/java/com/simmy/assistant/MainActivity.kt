@@ -630,3 +630,4 @@ private fun openAppByName(raw: String): Boolean {
 
     return true
 }
+}

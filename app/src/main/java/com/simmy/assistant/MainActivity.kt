@@ -42,77 +42,48 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         tts = TextToSpeech(this, this)
 
-        val layout = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setPadding(32, 32, 32, 32)
-            setBackgroundColor(Color.rgb(12, 18, 30))
-        }
+        
+// Full-screen SIMMY interface
+window.setFlags(
+    android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+)
 
-        val title = TextView(this).apply {
-            text = "SIMMY 6.1"
-            textSize = 36f
-            setTextColor(Color.CYAN)
-            gravity = Gravity.CENTER
-        }
+val root = FrameLayout(this)
 
-        val subtitle = TextView(this).apply {
-            text = "Hey! Ek is Simmy."
-            textSize = 24f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        }
-
-        val simmyFace = ImageView(this).apply {
+val backgroundImage = ImageView(this).apply {
     setImageResource(R.drawable.simmy_face)
+    scaleType = ImageView.ScaleType.CENTER_CROP
+    contentDescription = "SIMMY full-screen interface"
+}
 
-    layoutParams = LinearLayout.LayoutParams(
-        LinearLayout.LayoutParams.MATCH_PARENT,
-        (220 * resources.displayMetrics.density).toInt()
+root.addView(
+    backgroundImage,
+    FrameLayout.LayoutParams(
+        FrameLayout.LayoutParams.MATCH_PARENT,
+        FrameLayout.LayoutParams.MATCH_PARENT
     )
+)
 
-    scaleType = ImageView.ScaleType.FIT_CENTER
-    contentDescription = "SIMMY assistant face"
-        }
+// Invisible button positioned over SIMMY's glowing circle
+val talkButton = View(this).apply {
+    setBackgroundColor(Color.TRANSPARENT)
+    isClickable = true
+    contentDescription = "Talk to SIMMY"
+    setOnClickListener {
+        checkMicrophonePermission()
+    }
+}
 
-        status = TextView(this).apply {
-            text = "Ready / Gereed"
-            textSize = 18f
-            setTextColor(Color.LTGRAY)
-            gravity = Gravity.CENTER
-        }
+val talkParams = FrameLayout.LayoutParams(
+    (240 * resources.displayMetrics.density).toInt(),
+    (240 * resources.displayMetrics.density).toInt(),
+    Gravity.CENTER
+)
 
-        heard = TextView(this).apply {
-            text = "Say a command or ask a question."
-            textSize = 16f
-            setTextColor(Color.WHITE)
-            gravity = Gravity.CENTER
-        }
+root.addView(talkButton, talkParams)
 
-        languageButton = Button(this).apply {
-            text = "🌐 Language: English (SA)"
-            setOnClickListener {
-                toggleLanguage()
-            }
-        }
+setContentView(root)
 
-        mic = Button(this).apply {
-            text = "🎙️ TALK TO SIMMY"
-            textSize = 20f
-            setOnClickListener {
-                checkMicrophonePermission()
-            }
-        }
-
-        layout.addView(title)
-        layout.addView(subtitle)
-        layout.addView(simmyFace)
-        layout.addView(status)
-        layout.addView(heard)
-        layout.addView(languageButton)
-        layout.addView(mic)
-
-        setContentView(layout)
     }
 
     // Switch between English (South Africa) and Afrikaans

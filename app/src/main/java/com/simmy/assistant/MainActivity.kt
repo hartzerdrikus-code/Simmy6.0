@@ -19,6 +19,7 @@ import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import android.widget.ImageView
 
 class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
@@ -62,6 +63,18 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
             gravity = Gravity.CENTER
         }
 
+        val simmyFace = ImageView(this).apply {
+    setImageResource(R.drawable.simmy_face)
+
+    layoutParams = LinearLayout.LayoutParams(
+        LinearLayout.LayoutParams.MATCH_PARENT,
+        (220 * resources.displayMetrics.density).toInt()
+    )
+
+    scaleType = ImageView.ScaleType.FIT_CENTER
+    contentDescription = "SIMMY assistant face"
+        }
+
         status = TextView(this).apply {
             text = "Ready / Gereed"
             textSize = 18f
@@ -93,6 +106,7 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 
         layout.addView(title)
         layout.addView(subtitle)
+        layout.addView(simmyFace)
         layout.addView(status)
         layout.addView(heard)
         layout.addView(languageButton)

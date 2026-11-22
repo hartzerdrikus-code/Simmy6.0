@@ -1,5 +1,7 @@
 package com.simmy.assistant
 
+import android.widget.FrameLayout
+import android.view.View
 import android.Manifest
 import android.app.Activity
 import android.content.Intent
@@ -46,6 +48,8 @@ class MainActivity : Activity(), TextToSpeech.OnInitListener {
 // Full-screen SIMMY interface
 window.setFlags(
     android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN,
+    android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN
+)
 )
 
 val root = FrameLayout(this)

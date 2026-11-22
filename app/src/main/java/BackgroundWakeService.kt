@@ -39,9 +39,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
         private const val CHANNEL_ID = "simmy_background_channel"
         private const val NOTIFICATION_ID = 2001
-
-        @Volatile
-        var isRunning = false
+        private const val TAG = "SIMMY"
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -96,7 +94,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
         ) {
-            showError("Microphone permission has not been granted.")
+            showError("SIMMY needs microphone permission.")
             stopSelf()
             return START_NOT_STICKY
         }
@@ -117,15 +115,13 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             isRunning = true
 
             setupRecognizer()
-            startListeningSoon(1500)
 
-            Log.d("SIMMY", "Background service started")
+            Log.d(TAG, "Background service started")
 
         } catch (e: Exception) {
-
             isRunning = false
 
-            Log.e("SIMMY", "Could not start background service", e)
+            Log.e(TAG, "Service startup failed", e)
 
             showError(
                 "SIMMY startup failed: ${e.javaClass.simpleName}: ${e.message}"
@@ -149,19 +145,16 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
     private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "SIMMY background listening",
                 NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "SIMMY background voice assistant"
-            }
+            )
 
-            val manager =
-                getSystemService(NotificationManager::class.java)
+            channel.description = "SIMMY voice assistant"
 
-            manager.createNotificationChannel(channel)
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(channel)
         }
     }
 
@@ -182,10 +175,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                 PendingIntent.FLAG_IMMUTABLE
         )
 
-        val openIntent = Intent(
-            this,
-            MainActivity::class.java
-        )
+        val openIntent = Intent(this, MainActivity::class.java)
 
         val openPendingIntent = PendingIntent.getActivity(
             this,
@@ -210,36 +200,36 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             .build()
     }
 
+    // TEXT TO SPEECH
+
     override fun onInit(status: Int) {
 
         if (status != TextToSpeech.SUCCESS) {
-            Log.e("SIMMY", "Text to speech initialization failed")
-            showError("SIMMY voice could not start.")
+            Log.e(TAG, "Text-to-speech initialization failed")
+            showError("SIMMY could not start its speaking voice.")
+            startListeningSoon(3000)
             return
         }
 
-        var result = tts?.setLanguage(Locale("en", "ZA"))
-
-        if (result == TextToSpeech.LANG_MISSING_DATA ||
-            result == TextToSpeech.LANG_NOT_SUPPORTED
-        ) {
-            result = tts?.setLanguage(Locale.UK)
-        }
+        val result = tts?.setLanguage(Locale.US)
 
         ttsReady =
             result != null &&
             result >= TextToSpeech.LANG_AVAILABLE
 
         if (!ttsReady) {
-            Log.e("SIMMY", "No supported speech language found")
-            showError("Please install an English voice in phone settings.")
+            Log.e(TAG, "English voice is unavailable")
+            showError("Please install an English voice on your phone.")
+            startListeningSoon(3000)
             return
         }
 
         tts?.setOnUtteranceProgressListener(
             object : UtteranceProgressListener() {
 
-                override fun onStart(id: String?) {}
+                override fun onStart(id: String?) {
+                    Log.d(TAG, "SIMMY speaking")
+                }
 
                 override fun onDone(id: String?) {
                     handler.post {
@@ -247,7 +237,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                             stopAfterSpeaking = false
                             stopSelf()
                         } else {
-                            startListeningSoon(600)
+                            startListeningSoon(1000)
                         }
                     }
                 }
@@ -258,7 +248,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                             stopAfterSpeaking = false
                             stopSelf()
                         } else {
-                            startListeningSoon(1000)
+                            startListeningSoon(2000)
                         }
                     }
                 }
@@ -270,13 +260,37 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
         if (pending != null) {
             speak(pending)
+        } else {
+            speak("SIMMY is ready. Say Hi S.")
         }
     }
+
+    private fun speak(message: String) {
+
+        if (!ttsReady || tts == null) {
+            pendingSpeech = message
+            return
+        }
+
+        try {
+            tts?.speak(
+                message,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "SIMMY_${System.currentTimeMillis()}"
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Speech output failed", e)
+            startListeningSoon(3000)
+        }
+    }
+
+    // SPEECH RECOGNITION
 
     private fun setupRecognizer() {
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            showError("Speech recognition is unavailable on this phone.")
+            showError("Speech recognition is unavailable.")
             return
         }
 
@@ -290,11 +304,11 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
                     override fun onReadyForSpeech(params: Bundle?) {
                         listening = true
-                        Log.d("SIMMY", "Ready for speech")
+                        Log.d(TAG, "Recognizer ready")
                     }
 
                     override fun onBeginningOfSpeech() {
-                        Log.d("SIMMY", "Speech detected")
+                        Log.d(TAG, "Speech detected")
                     }
 
                     override fun onRmsChanged(rmsdB: Float) {}
@@ -306,24 +320,18 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                     }
 
                     override fun onError(error: Int) {
-
                         listening = false
 
-                        Log.w("SIMMY", "Speech recognition error: $error")
+                        Log.w(TAG, "Recognition error: $error")
 
-                        if (!destroying && isRunning &&
-                            !waitingForCommand
-                        ) {
-                            startListeningSoon(1500)
-                        } else if (!destroying && isRunning &&
-                            waitingForCommand
-                        ) {
-                            startListeningSoon(1500)
-                        }
+                        if (destroying || !isRunning) return
+
+                        // Do not restart immediately. This helps
+                        // prevent rapid repeated recognition beeps.
+                        startListeningSoon(6000)
                     }
 
                     override fun onResults(results: Bundle?) {
-
                         listening = false
 
                         val matches = results?.getStringArrayList(
@@ -331,15 +339,15 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                         )
 
                         val words = matches?.firstOrNull()
-                            ?.lowercase(Locale.getDefault())
+                            ?.lowercase(Locale.US)
                             ?.replace(Regex("[^a-z0-9 ]"), " ")
                             ?.replace(Regex("\\s+"), " ")
                             ?.trim()
 
-                        Log.d("SIMMY", "Recognized: $words")
+                        Log.d(TAG, "Recognized words: $words")
 
                         if (words.isNullOrBlank()) {
-                            startListeningSoon(800)
+                            startListeningSoon(2000)
                             return
                         }
 
@@ -347,16 +355,14 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
                         processRecognizedWords(words)
 
-                        if (wasWaiting) {
-                            return
-                        }
+                        if (!wasWaiting) {
+                            val wakeDetected = wakePhrases.any {
+                                words.contains(it)
+                            }
 
-                        val wakeDetected = wakePhrases.any {
-                            words.contains(it)
-                        }
-
-                        if (!wakeDetected) {
-                            startListeningSoon(800)
+                            if (!wakeDetected) {
+                                startListeningSoon(1500)
+                            }
                         }
                     }
 
@@ -371,9 +377,15 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                 }
             )
 
+            // Wait until TTS says SIMMY is ready before listening.
+            // If TTS is already ready, start listening now.
+            if (ttsReady) {
+                startListeningSoon(1000)
+            }
+
         } catch (e: Exception) {
-            Log.e("SIMMY", "Recognizer setup failed", e)
-            showError("Could not prepare speech recognition.")
+            Log.e(TAG, "Recognizer setup failed", e)
+            showError("SIMMY could not prepare speech recognition.")
         }
     }
 
@@ -411,12 +423,12 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE,
-                        "en-ZA"
+                        "en-US"
                     )
 
                     putExtra(
                         RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
-                        "en-ZA"
+                        "en-US"
                     )
 
                     putExtra(
@@ -433,19 +445,32 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                         RecognizerIntent.EXTRA_PREFER_OFFLINE,
                         false
                     )
+
+                    // Ask the recognition service to allow
+                    // longer pauses before ending a session.
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        30000L
+                    )
+
+                    putExtra(
+                        RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS,
+                        30000L
+                    )
                 }
 
                 listening = true
 
                 recognizer?.startListening(speechIntent)
 
-            } catch (e: Exception) {
+                Log.d(TAG, "Listening session started")
 
+            } catch (e: Exception) {
                 listening = false
 
-                Log.e("SIMMY", "Could not start listening", e)
+                Log.e(TAG, "Could not start listening", e)
 
-                startListeningSoon(2000)
+                startListeningSoon(6000)
             }
         }
 
@@ -456,11 +481,8 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
     private fun processRecognizedWords(words: String) {
 
         if (waitingForCommand) {
-
             waitingForCommand = false
-
             handleCommand(words)
-
             return
         }
 
@@ -471,16 +493,14 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         val command = words.substringAfter(wakePhrase).trim()
 
         if (command.isNotBlank()) {
-
             handleCommand(command)
-
         } else {
-
             waitingForCommand = true
-
             speak("Yes, I'm listening. What can I do for you?")
         }
     }
+
+    // COMMANDS
 
     private fun handleCommand(command: String) {
 
@@ -488,23 +508,20 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
             command.contains("stop listening") ||
             command.contains("turn yourself off") -> {
-
                 stopAfterSpeaking = true
                 speak("Okay. I am stopping background listening.")
             }
 
             command.contains("stop talking") -> {
-
                 tts?.stop()
                 speak("Okay.")
             }
 
             command.contains("what time") ||
             command == "time" -> {
-
                 val time = SimpleDateFormat(
                     "h:mm a",
-                    Locale("en", "ZA")
+                    Locale.US
                 ).format(Date())
 
                 speak("The time is $time")
@@ -513,10 +530,9 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             command.contains("what date") ||
             command.contains("today's date") ||
             command.contains("what is the date") -> {
-
                 val date = SimpleDateFormat(
                     "EEEE, d MMMM yyyy",
-                    Locale("en", "ZA")
+                    Locale.US
                 ).format(Date())
 
                 speak("Today is $date")
@@ -524,7 +540,6 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
             command.contains("read my messages") ||
             command.contains("read messages") -> {
-
                 val message = MessageNotificationService.latestMessage
 
                 if (message.isNullOrBlank()) {
@@ -535,19 +550,16 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             }
 
             command.contains("bluetooth") -> {
-
                 speak("Opening Bluetooth settings.")
                 openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
             }
 
             command.contains("open settings") -> {
-
                 speak("Opening settings.")
                 openSettings(Settings.ACTION_SETTINGS)
             }
 
             command.contains("open camera") -> {
-
                 speak("Opening camera.")
                 openActivity(
                     Intent("android.media.action.IMAGE_CAPTURE")
@@ -556,7 +568,6 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
             command.contains("open youtube") ||
             command.contains("launch youtube") -> {
-
                 openApp(
                     "com.google.android.youtube",
                     "Opening YouTube."
@@ -566,31 +577,24 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             command.startsWith("set timer") ||
             command.startsWith("start timer") ||
             command.contains("timer for") -> {
-
                 setTimer(command)
             }
 
             command.startsWith("call ") -> {
-
-                callContact(
-                    command.removePrefix("call ").trim()
-                )
+                callContact(command.removePrefix("call ").trim())
             }
 
             command.startsWith("text ") ||
             command.startsWith("sms ") -> {
-
                 sendTextCommand(command)
             }
 
             command.startsWith("whatsapp ") -> {
-
                 sendWhatsAppCommand(command)
             }
 
             command.startsWith("open ") ||
             command.startsWith("launch ") -> {
-
                 val appName = command
                     .removePrefix("open ")
                     .removePrefix("launch ")
@@ -600,13 +604,12 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             }
 
             else -> {
-
-                speak(
-                    "I heard you, but I do not know that command yet."
-                )
+                speak("I heard you, but I do not know that command yet.")
             }
         }
     }
+
+    // TIMER
 
     private fun setTimer(command: String) {
 
@@ -663,25 +666,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         manager.notify(2002, notification)
     }
 
-    private fun speak(message: String) {
-
-        if (!ttsReady || tts == null) {
-            pendingSpeech = message
-            return
-        }
-
-        try {
-            tts?.speak(
-                message,
-                TextToSpeech.QUEUE_FLUSH,
-                null,
-                "SIMMY_${System.currentTimeMillis()}"
-            )
-        } catch (e: Exception) {
-            Log.e("SIMMY", "Speech output failed", e)
-            startListeningSoon(1000)
-        }
-    }
+    // PHONE SETTINGS AND APPS
 
     private fun openSettings(action: String) {
         try {
@@ -749,6 +734,8 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         }
     }
 
+    // CONTACTS AND MESSAGES
+
     private fun findContactNumber(name: String): String? {
 
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS)
@@ -771,7 +758,6 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
         cursor?.use {
             while (it.moveToNext()) {
-
                 val contactName = it.getString(0) ?: ""
                 val number = it.getString(1) ?: ""
 
@@ -861,6 +847,8 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         openActivity(Intent(Intent.ACTION_VIEW, url))
     }
 
+    // CLEANUP
+
     override fun onDestroy() {
 
         destroying = true
@@ -875,7 +863,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             recognizer?.cancel()
             recognizer?.destroy()
         } catch (e: Exception) {
-            Log.e("SIMMY", "Recognizer cleanup error", e)
+            Log.e(TAG, "Recognizer cleanup failed", e)
         }
 
         recognizer = null
@@ -884,7 +872,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             tts?.stop()
             tts?.shutdown()
         } catch (e: Exception) {
-            Log.e("SIMMY", "TTS cleanup error", e)
+            Log.e(TAG, "TTS cleanup failed", e)
         }
 
         tts = null

@@ -10,7 +10,16 @@
 </queries>
 
     <uses-permission android:name="android.permission.INTERNET" />
+
+<!-- Microphone access -->
 <uses-permission android:name="android.permission.RECORD_AUDIO" />
+
+<!-- Background voice service -->
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+
+<!-- Notifications -->
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
     <application
         android:allowBackup="true"

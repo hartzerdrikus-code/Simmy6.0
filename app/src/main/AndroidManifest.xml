@@ -2,10 +2,10 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Microphone and speech recognition -->
+    <!-- Microphone -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
-    <!-- Foreground background-listening service -->
+    <!-- Foreground service -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
@@ -35,7 +35,7 @@
         android:supportsRtl="true"
         android:theme="@android:style/Theme.Material.Light.NoActionBar">
 
-        <!-- Main SIMMY screen -->
+        <!-- Main screen -->
         <activity
             android:name=".MainActivity"
             android:exported="true">
@@ -47,14 +47,14 @@
 
         </activity>
 
-        <!-- SIMMY background wake-word service -->
+        <!-- Background voice listening -->
         <service
             android:name=".BackgroundWakeService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="microphone" />
 
-        <!-- SIMMY notification message reader -->
+        <!-- Message notification reader -->
         <service
             android:name=".MessageNotificationService"
             android:label="SIMMY Message Reader"

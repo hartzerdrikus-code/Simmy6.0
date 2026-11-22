@@ -253,7 +253,11 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             return
         }
 
-        val wakePhrases = listOf("hi simmy", "hey simmy", "hello simmy")
+        val wakeWords = listOf(
+    "hi s",
+    "hey s",
+    "hello s"
+)
         val wakePhrase = wakePhrases.firstOrNull { words.contains(it) } ?: return
 
         val command = words.substringAfter(wakePhrase).trim()

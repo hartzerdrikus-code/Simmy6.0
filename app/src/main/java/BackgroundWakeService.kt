@@ -10,6 +10,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -23,6 +24,8 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.util.Log
+import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -58,11 +61,12 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
     private var tts: TextToSpeech? = null
 
     private var ttsReady = false
-    private var pendingSpeech: String? = null
-    private var waitingForCommand = false
     private var listening = false
+    private var waitingForCommand = false
     private var destroying = false
+    private var stopAfterSpeaking = false
 
+    private var pendingSpeech: String? = null
     private var listenRunnable: Runnable? = null
     private var timerRunnable: Runnable? = null
 
@@ -85,51 +89,79 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             return START_NOT_STICKY
         }
 
-        if (!isRunning) {
+        if (isRunning) {
+            return START_STICKY
+        }
 
-            if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
-                != PackageManager.PERMISSION_GRANTED
-            ) {
-                stopSelf()
-                return START_NOT_STICKY
-            }
+        if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            showError("Microphone permission has not been granted.")
+            stopSelf()
+            return START_NOT_STICKY
+        }
 
-            try {
+        try {
+            val notification = buildNotification()
+
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 startForeground(
                     NOTIFICATION_ID,
-                    buildNotification()
+                    notification,
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 )
-
-                isRunning = true
-
-                setupRecognizer()
-
-                startListeningSoon(1500)
-
-            } catch (e: Exception) {
-                isRunning = false
-                stopSelf()
+            } else {
+                startForeground(NOTIFICATION_ID, notification)
             }
+
+            isRunning = true
+
+            setupRecognizer()
+            startListeningSoon(1500)
+
+            Log.d("SIMMY", "Background service started")
+
+        } catch (e: Exception) {
+
+            isRunning = false
+
+            Log.e("SIMMY", "Could not start background service", e)
+
+            showError(
+                "SIMMY startup failed: ${e.javaClass.simpleName}: ${e.message}"
+            )
+
+            stopSelf()
         }
 
         return START_STICKY
     }
 
-    private fun createNotificationChannel() {
+    private fun showError(message: String) {
+        handler.post {
+            Toast.makeText(
+                applicationContext,
+                message,
+                Toast.LENGTH_LONG
+            ).show()
+        }
+    }
 
+    private fun createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "SIMMY background listening",
                 NotificationManager.IMPORTANCE_LOW
-            )
+            ).apply {
+                description = "SIMMY background voice assistant"
+            }
 
-            channel.description =
-                "SIMMY is listening for its wake phrase"
+            val manager =
+                getSystemService(NotificationManager::class.java)
 
-            getSystemService(NotificationManager::class.java)
-                .createNotificationChannel(channel)
+            manager.createNotificationChannel(channel)
         }
     }
 
@@ -147,17 +179,20 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             22,
             stopIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_IMMUTABLE
         )
 
-        val openIntent = Intent(this, MainActivity::class.java)
+        val openIntent = Intent(
+            this,
+            MainActivity::class.java
+        )
 
         val openPendingIntent = PendingIntent.getActivity(
             this,
             23,
             openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_IMMUTABLE
         )
 
         return NotificationCompat.Builder(this, CHANNEL_ID)
@@ -166,6 +201,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             .setContentText("Listening for Hi S")
             .setContentIntent(openPendingIntent)
             .setOngoing(true)
+            .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(
                 android.R.drawable.ic_media_pause,
                 "Stop",
@@ -176,106 +212,136 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
 
-        if (status == TextToSpeech.SUCCESS) {
+        if (status != TextToSpeech.SUCCESS) {
+            Log.e("SIMMY", "Text to speech initialization failed")
+            showError("SIMMY voice could not start.")
+            return
+        }
 
-            var result = tts?.setLanguage(
-                Locale("en", "ZA")
-            )
+        var result = tts?.setLanguage(Locale("en", "ZA"))
 
-            if (result == TextToSpeech.LANG_MISSING_DATA ||
-                result == TextToSpeech.LANG_NOT_SUPPORTED
-            ) {
-                result = tts?.setLanguage(Locale.UK)
-            }
+        if (result == TextToSpeech.LANG_MISSING_DATA ||
+            result == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
+            result = tts?.setLanguage(Locale.UK)
+        }
 
-            ttsReady = result != TextToSpeech.LANG_MISSING_DATA &&
-                    result != TextToSpeech.LANG_NOT_SUPPORTED &&
-                    result != null &&
-                    result >= TextToSpeech.LANG_AVAILABLE
+        ttsReady =
+            result != null &&
+            result >= TextToSpeech.LANG_AVAILABLE
 
-            if (ttsReady) {
+        if (!ttsReady) {
+            Log.e("SIMMY", "No supported speech language found")
+            showError("Please install an English voice in phone settings.")
+            return
+        }
 
-                tts?.setOnUtteranceProgressListener(
-                    object : UtteranceProgressListener() {
+        tts?.setOnUtteranceProgressListener(
+            object : UtteranceProgressListener() {
 
-                        override fun onStart(id: String?) {}
+                override fun onStart(id: String?) {}
 
-                        override fun onDone(id: String?) {
-                            handler.post {
-                                startListeningSoon(500)
-                            }
-                        }
-
-                        override fun onError(id: String?) {
-                            handler.post {
-                                startListeningSoon(700)
-                            }
+                override fun onDone(id: String?) {
+                    handler.post {
+                        if (stopAfterSpeaking) {
+                            stopAfterSpeaking = false
+                            stopSelf()
+                        } else {
+                            startListeningSoon(600)
                         }
                     }
-                )
+                }
 
-                val pending = pendingSpeech
-                pendingSpeech = null
-
-                if (pending != null) {
-                    speak(pending)
+                override fun onError(id: String?) {
+                    handler.post {
+                        if (stopAfterSpeaking) {
+                            stopAfterSpeaking = false
+                            stopSelf()
+                        } else {
+                            startListeningSoon(1000)
+                        }
+                    }
                 }
             }
+        )
+
+        val pending = pendingSpeech
+        pendingSpeech = null
+
+        if (pending != null) {
+            speak(pending)
         }
     }
 
     private fun setupRecognizer() {
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
-            speak("Speech recognition is not available on this phone.")
+            showError("Speech recognition is unavailable on this phone.")
             return
         }
 
-        recognizer?.destroy()
+        try {
+            recognizer?.destroy()
 
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            recognizer = SpeechRecognizer.createSpeechRecognizer(this)
 
-        recognizer?.setRecognitionListener(
-            object : RecognitionListener {
+            recognizer?.setRecognitionListener(
+                object : RecognitionListener {
 
-                override fun onReadyForSpeech(params: Bundle?) {
-                    listening = true
-                }
-
-                override fun onBeginningOfSpeech() {}
-
-                override fun onRmsChanged(rmsdB: Float) {}
-
-                override fun onBufferReceived(buffer: ByteArray?) {}
-
-                override fun onEndOfSpeech() {
-                    listening = false
-                }
-
-                override fun onError(error: Int) {
-
-                    listening = false
-
-                    if (!destroying && isRunning) {
-                        startListeningSoon(1200)
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        listening = true
+                        Log.d("SIMMY", "Ready for speech")
                     }
-                }
 
-                override fun onResults(results: Bundle?) {
+                    override fun onBeginningOfSpeech() {
+                        Log.d("SIMMY", "Speech detected")
+                    }
 
-                    listening = false
+                    override fun onRmsChanged(rmsdB: Float) {}
 
-                    val matches = results?.getStringArrayList(
-                        SpeechRecognizer.RESULTS_RECOGNITION
-                    )
+                    override fun onBufferReceived(buffer: ByteArray?) {}
 
-                    val words = matches?.firstOrNull()
-                        ?.lowercase(Locale.getDefault())
-                        ?.replace(Regex("[^a-z0-9 ]"), " ")
-                        ?.replace(Regex("\\s+"), " ")
-                        ?.trim()
+                    override fun onEndOfSpeech() {
+                        listening = false
+                    }
 
-                    if (!words.isNullOrBlank()) {
+                    override fun onError(error: Int) {
+
+                        listening = false
+
+                        Log.w("SIMMY", "Speech recognition error: $error")
+
+                        if (!destroying && isRunning &&
+                            !waitingForCommand
+                        ) {
+                            startListeningSoon(1500)
+                        } else if (!destroying && isRunning &&
+                            waitingForCommand
+                        ) {
+                            startListeningSoon(1500)
+                        }
+                    }
+
+                    override fun onResults(results: Bundle?) {
+
+                        listening = false
+
+                        val matches = results?.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION
+                        )
+
+                        val words = matches?.firstOrNull()
+                            ?.lowercase(Locale.getDefault())
+                            ?.replace(Regex("[^a-z0-9 ]"), " ")
+                            ?.replace(Regex("\\s+"), " ")
+                            ?.trim()
+
+                        Log.d("SIMMY", "Recognized: $words")
+
+                        if (words.isNullOrBlank()) {
+                            startListeningSoon(800)
+                            return
+                        }
 
                         val wasWaiting = waitingForCommand
 
@@ -290,24 +356,25 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                         }
 
                         if (!wakeDetected) {
-                            startListeningSoon(700)
+                            startListeningSoon(800)
                         }
-
-                    } else {
-                        startListeningSoon(700)
                     }
+
+                    override fun onPartialResults(
+                        partialResults: Bundle?
+                    ) {}
+
+                    override fun onEvent(
+                        eventType: Int,
+                        params: Bundle?
+                    ) {}
                 }
+            )
 
-                override fun onPartialResults(
-                    partialResults: Bundle?
-                ) {}
-
-                override fun onEvent(
-                    eventType: Int,
-                    params: Bundle?
-                ) {}
-            }
-        )
+        } catch (e: Exception) {
+            Log.e("SIMMY", "Recognizer setup failed", e)
+            showError("Could not prepare speech recognition.")
+        }
     }
 
     private fun startListeningSoon(delay: Long) {
@@ -327,13 +394,13 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
                 != PackageManager.PERMISSION_GRANTED
             ) {
+                showError("SIMMY needs microphone permission.")
                 stopSelf()
                 return@Runnable
             }
 
             try {
-
-                val intent = Intent(
+                val speechIntent = Intent(
                     RecognizerIntent.ACTION_RECOGNIZE_SPEECH
                 ).apply {
 
@@ -359,12 +426,9 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
 
                     putExtra(
                         RecognizerIntent.EXTRA_PARTIAL_RESULTS,
-                        true
+                        false
                     )
 
-                    // Do not force offline recognition.
-                    // This allows Android to use its available
-                    // online speech recognition service.
                     putExtra(
                         RecognizerIntent.EXTRA_PREFER_OFFLINE,
                         false
@@ -372,11 +436,14 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
                 }
 
                 listening = true
-                recognizer?.startListening(intent)
+
+                recognizer?.startListening(speechIntent)
 
             } catch (e: Exception) {
 
                 listening = false
+
+                Log.e("SIMMY", "Could not start listening", e)
 
                 startListeningSoon(2000)
             }
@@ -422,17 +489,13 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             command.contains("stop listening") ||
             command.contains("turn yourself off") -> {
 
+                stopAfterSpeaking = true
                 speak("Okay. I am stopping background listening.")
-
-                handler.postDelayed({
-                    stopSelf()
-                }, 2500)
             }
 
             command.contains("stop talking") -> {
 
                 tts?.stop()
-
                 speak("Okay.")
             }
 
@@ -474,21 +537,18 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             command.contains("bluetooth") -> {
 
                 speak("Opening Bluetooth settings.")
-
                 openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
             }
 
             command.contains("open settings") -> {
 
                 speak("Opening settings.")
-
                 openSettings(Settings.ACTION_SETTINGS)
             }
 
             command.contains("open camera") -> {
 
                 speak("Opening camera.")
-
                 openActivity(
                     Intent("android.media.action.IMAGE_CAPTURE")
                 )
@@ -555,11 +615,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         ).find(command)
 
         if (match == null) {
-
-            speak(
-                "Please say set timer for 5 minutes, for example."
-            )
-
+            speak("Please say set timer for 5 minutes, for example.")
             return
         }
 
@@ -567,15 +623,9 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         val unit = match.groupValues[2]
 
         val multiplier = when {
-
-            unit.startsWith("hour") ->
-                60L * 60L * 1000L
-
-            unit.startsWith("minute") ->
-                60L * 1000L
-
-            else ->
-                1000L
+            unit.startsWith("hour") -> 3600000L
+            unit.startsWith("minute") -> 60000L
+            else -> 1000L
         }
 
         val duration = amount * multiplier
@@ -585,9 +635,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         }
 
         timerRunnable = Runnable {
-
             speak("Your timer is finished.")
-
             showTimerNotification()
         }
 
@@ -618,46 +666,39 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
     private fun speak(message: String) {
 
         if (!ttsReady || tts == null) {
-
             pendingSpeech = message
-
             return
         }
 
-        tts?.speak(
-            message,
-            TextToSpeech.QUEUE_FLUSH,
-            null,
-            "SIMMY_${System.currentTimeMillis()}"
-        )
+        try {
+            tts?.speak(
+                message,
+                TextToSpeech.QUEUE_FLUSH,
+                null,
+                "SIMMY_${System.currentTimeMillis()}"
+            )
+        } catch (e: Exception) {
+            Log.e("SIMMY", "Speech output failed", e)
+            startListeningSoon(1000)
+        }
     }
 
     private fun openSettings(action: String) {
-
         try {
-
             val intent = Intent(action).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
-
             startActivity(intent)
-
         } catch (e: Exception) {
-
             speak("I could not open those settings.")
         }
     }
 
     private fun openActivity(intent: Intent) {
-
         try {
-
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
             startActivity(intent)
-
         } catch (e: Exception) {
-
             speak("I could not open that.")
         }
     }
@@ -666,21 +707,16 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         packageName: String,
         message: String
     ) {
-
         val launchIntent =
             packageManager.getLaunchIntentForPackage(packageName)
 
         if (launchIntent == null) {
-
             speak("That app is not installed.")
-
             return
         }
 
         speak(message)
-
         launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
         openActivity(launchIntent)
     }
 
@@ -691,16 +727,13 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         )
 
         val match = apps.firstOrNull {
-
             packageManager.getApplicationLabel(it)
                 .toString()
                 .contains(appName, ignoreCase = true)
         }
 
         if (match == null) {
-
             speak("I could not find that app.")
-
             return
         }
 
@@ -708,15 +741,10 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             packageManager.getLaunchIntentForPackage(match.packageName)
 
         if (launchIntent != null) {
-
             speak("Opening $appName.")
-
             launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
             openActivity(launchIntent)
-
         } else {
-
             speak("I could not open that app.")
         }
     }
@@ -726,11 +754,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-
-            speak(
-                "Please allow contacts permission in SIMMY settings."
-            )
-
+            speak("Please allow contacts permission in SIMMY settings.")
             return null
         }
 
@@ -746,7 +770,6 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         )
 
         cursor?.use {
-
             while (it.moveToNext()) {
 
                 val contactName = it.getString(0) ?: ""
@@ -766,9 +789,7 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         val number = findContactNumber(name)
 
         if (number.isNullOrBlank()) {
-
             speak("I could not find that contact.")
-
             return
         }
 
@@ -791,20 +812,14 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         val parts = content.split(" saying ", limit = 2)
 
         if (parts.size != 2) {
-
-            speak(
-                "Say text, the contact name, saying, and your message."
-            )
-
+            speak("Say text, the contact name, saying, and your message.")
             return
         }
 
         val number = findContactNumber(parts[0].trim())
 
         if (number.isNullOrBlank()) {
-
             speak("I could not find that contact.")
-
             return
         }
 
@@ -812,54 +827,38 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
             Intent.ACTION_SENDTO,
             Uri.parse("smsto:${Uri.encode(number)}")
         ).apply {
-
             putExtra("sms_body", parts[1].trim())
         }
 
         speak("Opening your text message.")
-
         openActivity(intent)
     }
 
     private fun sendWhatsAppCommand(command: String) {
 
-        val content = command
-            .removePrefix("whatsapp ")
-            .trim()
-
+        val content = command.removePrefix("whatsapp ").trim()
         val parts = content.split(" saying ", limit = 2)
 
         if (parts.size != 2) {
-
-            speak(
-                "Say WhatsApp, the contact name, saying, and your message."
-            )
-
+            speak("Say WhatsApp, the contact name, saying, and your message.")
             return
         }
 
         val number = findContactNumber(parts[0].trim())
 
         if (number.isNullOrBlank()) {
-
             speak("I could not find that contact.")
-
             return
         }
 
-        val cleanNumber = number.filter {
-            it.isDigit()
-        }
+        val cleanNumber = number.filter { it.isDigit() }
 
         val url = Uri.parse(
             "https://wa.me/$cleanNumber?text=${Uri.encode(parts[1].trim())}"
         )
 
         speak("Opening WhatsApp.")
-
-        openActivity(
-            Intent(Intent.ACTION_VIEW, url)
-        )
+        openActivity(Intent(Intent.ACTION_VIEW, url))
     }
 
     override fun onDestroy() {
@@ -873,23 +872,33 @@ class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
         listenRunnable = null
 
         try {
-
             recognizer?.cancel()
             recognizer?.destroy()
-
-        } catch (_: Exception) {
+        } catch (e: Exception) {
+            Log.e("SIMMY", "Recognizer cleanup error", e)
         }
 
         recognizer = null
 
-        tts?.stop()
-        tts?.shutdown()
+        try {
+            tts?.stop()
+            tts?.shutdown()
+        } catch (e: Exception) {
+            Log.e("SIMMY", "TTS cleanup error", e)
+        }
+
         tts = null
+        ttsReady = false
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        } else {
+            @Suppress("DEPRECATION")
+            stopForeground(true)
+        }
 
         super.onDestroy()
     }
 
-    override fun onBind(intent: Intent?): IBinder? {
-        return null
-    }
+    override fun onBind(intent: Intent?): IBinder? = null
 }

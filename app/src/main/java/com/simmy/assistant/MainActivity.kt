@@ -2,7 +2,6 @@
 package com.simmy.assistant
 
 import android.Manifest
-import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Color
@@ -21,14 +20,14 @@ import android.view.View
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.Toast
-import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
-class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
+class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private var tts: TextToSpeech? = null
     private var ttsReady = false
@@ -48,9 +47,8 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         tts = TextToSpeech(this, this)
 
-        val root = FrameLayout(this).apply {
-            setBackgroundColor(Color.TRANSPARENT)
-        }
+        val root = FrameLayout(this)
+        root.setBackgroundColor(Color.TRANSPARENT)
 
         val face = ImageView(this).apply {
             setImageResource(R.drawable.simmy_face)
@@ -76,10 +74,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             setOnLongClickListener {
-                speak(
-                    "Background wake word is not configured yet. " +
-                    "Please tap me to talk."
-                )
+                speak("Background wake word is not configured yet. Tap me to talk.")
                 true
             }
         }
@@ -113,6 +108,12 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    private fun hasPermission(permission: String): Boolean {
+        return ContextCompat.checkSelfPermission(
+            this, permission
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
     private fun startListening() {
         if (!hasPermission(Manifest.permission.RECORD_AUDIO)) {
             ActivityCompat.requestPermissions(
@@ -124,21 +125,17 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            speak("This phone version does not support Android on-device speech recognition through this feature.")
+            speak("On-device offline speech recognition requires Android 12 or newer.")
             return
         }
 
         if (!SpeechRecognizer.isOnDeviceRecognitionAvailable(this)) {
-            speak(
-                "Offline speech recognition is not available. " +
-                "Please install an offline English speech recognition " +
-                "language in your phone settings."
-            )
+            speak("Offline speech recognition is not available. Please install an offline speech language on your phone.")
             return
         }
 
         try {
-            recognizer?.destroy()
+            destroyRecognizer()
 
             recognizer = SpeechRecognizer.createOnDeviceSpeechRecognizer(this)
 
@@ -155,17 +152,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     override fun onEndOfSpeech() {}
 
                     override fun onError(error: Int) {
-                        speak("I couldn't understand. Please try again.")
                         destroyRecognizer()
+                        speak("I couldn't understand. Please try again.")
                     }
 
                     override fun onResults(results: Bundle?) {
-                        val matches = results?.getStringArrayList(
+                        val words = results?.getStringArrayList(
                             SpeechRecognizer.RESULTS_RECOGNITION
                         )
 
-                        val command = matches?.firstOrNull()
-
+                        val command = words?.firstOrNull()
                         destroyRecognizer()
 
                         if (command.isNullOrBlank()) {
@@ -188,7 +184,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-ZA")
-                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, "en-ZA")
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
             }
@@ -197,7 +192,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
 
         } catch (e: Exception) {
             destroyRecognizer()
-            speak("I could not start offline listening.")
+            speak("I could not start listening.")
         }
     }
 
@@ -226,8 +221,9 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             command.contains("read my messages") ||
             command.contains("read messages") -> {
                 val message = MessageNotificationService.latestMessage
+
                 if (message.isNullOrBlank()) {
-                    speak("I don't have a recent message notification.")
+                    speak("I have no recent message notifications.")
                 } else {
                     speak("Your latest message says: $message")
                 }
@@ -241,59 +237,47 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 findContactAndCall(command.removePrefix("call ").trim())
             }
 
-            command.startsWith("text ") && command.contains(" saying ") -> {
+            (command.startsWith("text ") || command.startsWith("sms ")) &&
+            command.contains(" saying ") -> {
                 prepareSms(command)
             }
 
-            command.startsWith("sms ") && command.contains(" saying ") -> {
-                prepareSms(command)
-            }
-
-            command.contains("whatsapp") && command.contains(" saying ") -> {
+            command.contains("whatsapp") &&
+            command.contains(" saying ") -> {
                 prepareWhatsApp(command)
             }
 
             command.contains("what time") ||
-            command == "time" ||
-            command.contains("tell me the time") -> {
+            command == "time" -> {
                 val time = SimpleDateFormat("h:mm a", Locale.UK).format(Date())
                 speak("The time is $time")
             }
 
             command.contains("what date") ||
-            command == "date" ||
-            command.contains("today's date") -> {
+            command == "date" -> {
                 val date = SimpleDateFormat(
-                    "EEEE, d MMMM yyyy",
-                    Locale.UK
+                    "EEEE, d MMMM yyyy", Locale.UK
                 ).format(Date())
                 speak("Today is $date")
             }
 
-            command.contains("open ") ||
+            command.startsWith("open ") ||
             command.startsWith("launch ") -> {
-                val appName = command
-                    .replaceFirst(Regex("^open\\s+"), "")
-                    .replaceFirst(Regex("^launch\\s+"), "")
+                val name = command
+                    .replaceFirst(Regex("^(open|launch)\\s+"), "")
                     .trim()
 
-                openInstalledApp(appName)
+                openInstalledApp(name)
             }
 
-            command.contains("youtube") -> {
-                openInstalledApp("YouTube")
-            }
-
-            command.contains("camera") -> {
-                openCamera()
-            }
-
+            command.contains("youtube") -> openInstalledApp("YouTube")
+            command.contains("camera") -> openCamera()
             command.contains("settings") -> {
                 openIntent(Intent(Settings.ACTION_SETTINGS))
             }
 
             else -> {
-                speak("I don't know that command yet. Try saying open WhatsApp or open YouTube.")
+                speak("I don't understand that command yet.")
             }
         }
     }
@@ -304,43 +288,31 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 PackageManager.GET_META_DATA
             )
 
-            val search = spokenName
-                .lowercase(Locale.ROOT)
-                .replace(Regex("[^a-z0-9 ]"), "")
-                .trim()
+            val search = spokenName.lowercase(Locale.ROOT).trim()
 
-            val match = apps.firstOrNull { app ->
-                val label = packageManager
-                    .getApplicationLabel(app)
-                    .toString()
-                    .lowercase(Locale.ROOT)
-
-                label == search
-            } ?: apps.firstOrNull { app ->
-                val label = packageManager
-                    .getApplicationLabel(app)
-                    .toString()
-                    .lowercase(Locale.ROOT)
-
-                label.contains(search) || search.contains(label)
+            val match = apps.firstOrNull {
+                packageManager.getApplicationLabel(it)
+                    .toString().lowercase(Locale.ROOT) == search
+            } ?: apps.firstOrNull {
+                packageManager.getApplicationLabel(it)
+                    .toString().lowercase(Locale.ROOT).contains(search)
             }
 
             if (match == null) {
-                speak("I couldn't find $spokenName on your phone.")
+                speak("I couldn't find $spokenName.")
                 return
             }
 
-            val launchIntent = packageManager.getLaunchIntentForPackage(
+            val launch = packageManager.getLaunchIntentForPackage(
                 match.packageName
             )
 
-            if (launchIntent == null) {
-                speak("I found $spokenName, but Android cannot open it.")
+            if (launch == null) {
+                speak("Android cannot open that app.")
                 return
             }
 
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            startActivity(launchIntent)
+            startActivity(launch)
             speak("Opening $spokenName.")
 
         } catch (e: Exception) {
@@ -349,12 +321,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
     }
 
     private fun openCamera() {
-        try {
-            val intent = Intent("android.media.action.IMAGE_CAPTURE")
-            openIntent(intent)
-        } catch (_: Exception) {
-            speak("I couldn't open the camera.")
-        }
+        openIntent(Intent("android.media.action.IMAGE_CAPTURE"))
     }
 
     private fun openBluetooth() {
@@ -370,10 +337,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         }
 
         speak("Opening Bluetooth settings.")
-
-        openIntent(
-            Intent(Settings.ACTION_BLUETOOTH_SETTINGS)
-        )
+        openIntent(Intent(Settings.ACTION_BLUETOOTH_SETTINGS))
     }
 
     private fun prepareWhatsApp(command: String) {
@@ -399,16 +363,16 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             val number = phone.filter { it.isDigit() || it == '+' }
-            val encodedMessage = Uri.encode(message)
+            val encoded = Uri.encode(message)
 
             openIntent(
                 Intent(
                     Intent.ACTION_VIEW,
-                    Uri.parse("https://wa.me/$number?text=$encodedMessage")
+                    Uri.parse("https://wa.me/$number?text=$encoded")
                 )
             )
 
-            speak("Your WhatsApp message is ready. Please check it and press send.")
+            speak("Your WhatsApp message is ready. Please review and send it.")
         }
     }
 
@@ -440,7 +404,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             }
 
             openIntent(intent)
-            speak("Your SMS is ready. Please check it and press send.")
+            speak("Your SMS is ready. Please review and send it.")
         }
     }
 
@@ -449,7 +413,6 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (phone.isNullOrBlank()) {
                 speak("I couldn't find that contact.")
             } else {
-                speak("Opening the phone dialler.")
                 openIntent(
                     Intent(
                         Intent.ACTION_DIAL,
@@ -470,7 +433,7 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
                 arrayOf(Manifest.permission.READ_CONTACTS),
                 contactsCode
             )
-            speak("Please allow SIMMY to access your contacts, then repeat your command.")
+            speak("Please allow contacts permission and repeat your command.")
             return
         }
 
@@ -486,19 +449,15 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             )
 
             contentResolver.query(
-                uri,
-                projection,
-                null,
-                null,
-                null
+                uri, projection, null, null, null
             )?.use { cursor ->
                 if (cursor.moveToFirst()) {
-                    val number = cursor.getString(
+                    val phone = cursor.getString(
                         cursor.getColumnIndexOrThrow(
                             ContactsContract.CommonDataKinds.Phone.NUMBER
                         )
                     )
-                    callback(number)
+                    callback(phone)
                     return
                 }
             }
@@ -515,18 +474,11 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
             if (intent.resolveActivity(packageManager) != null) {
                 startActivity(intent)
             } else {
-                speak("That feature or app is not available.")
+                speak("That app or feature is not available.")
             }
         } catch (e: Exception) {
-            speak("Android could not open that.")
+            speak("I couldn't open that.")
         }
-    }
-
-    private fun hasPermission(permission: String): Boolean {
-        return ContextCompat.checkSelfPermission(
-            this,
-            permission
-        ) == PackageManager.PERMISSION_GRANTED
     }
 
     private fun speak(message: String) {
@@ -548,36 +500,26 @@ class MainActivity : AppCompatActivity(), TextToSpeech.OnInitListener {
         grantResults: IntArray
     ) {
         super.onRequestPermissionsResult(
-            requestCode,
-            permissions,
-            grantResults
+            requestCode, permissions, grantResults
         )
 
         val granted = grantResults.firstOrNull() ==
             PackageManager.PERMISSION_GRANTED
 
         when (requestCode) {
-            microphoneCode -> {
-                if (granted) {
-                    speak("Microphone permission granted. Tap me to talk.")
-                } else {
-                    speak("Microphone permission is needed.")
-                }
-            }
+            microphoneCode -> speak(
+                if (granted) "Microphone ready. Tap me to talk."
+                else "Microphone permission is required."
+            )
 
-            contactsCode -> {
-                speak(
-                    if (granted) "Contact permission granted. Please repeat your command."
-                    else "Contact permission was not granted."
-                )
-            }
+            contactsCode -> speak(
+                if (granted) "Contacts permission granted. Repeat your command."
+                else "Contacts permission denied."
+            )
 
             bluetoothCode -> {
-                if (granted) {
-                    openBluetooth()
-                } else {
-                    speak("Bluetooth permission was not granted.")
-                }
+                if (granted) openBluetooth()
+                else speak("Bluetooth permission denied.")
             }
         }
     }

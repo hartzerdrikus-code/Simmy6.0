@@ -51,6 +51,7 @@ window.setFlags(
     android.view.WindowManager.LayoutParams.FLAG_FULLSCREEN
 )
 )
+)
 
 val root = FrameLayout(this)
 

@@ -27,6 +27,11 @@ import java.util.Date
 import java.util.Locale
 
 class BackgroundWakeService : Service(), TextToSpeech.OnInitListener {
+    private val wakePhrases = listOf(
+    "hi s",
+    "hey s",
+    "hello s"
+)
 
     companion object {
         const val ACTION_START = "com.simmy.assistant.START_WAKE"

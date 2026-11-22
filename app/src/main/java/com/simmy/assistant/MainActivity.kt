@@ -28,9 +28,11 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
     private lateinit var tts: TextToSpeech
     private var ttsReady = false
     private var speechRecognizer: SpeechRecognizer? = null
-    private var isAfrikaans = false
 
     private val microphoneRequestCode = 100
+
+    // SIMMY uses English (South Africa) only.
+    private val simmyLanguage = Locale("en", "ZA")
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             setBackgroundColor(Color.TRANSPARENT)
         }
 
+        // Full-screen SIMMY face.
         val face = ImageView(this).apply {
             setImageResource(R.drawable.simmy_face)
             scaleType = ImageView.ScaleType.CENTER_CROP
@@ -59,22 +62,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             )
         )
 
+        // Invisible transparent talk button.
         val talkButton = View(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
             background = ColorDrawable(Color.TRANSPARENT)
             isClickable = true
+            isFocusable = true
 
             setOnClickListener {
                 startListening()
-            }
-
-            setOnLongClickListener {
-                isAfrikaans = !isAfrikaans
-                speak(
-                    if (isAfrikaans) "Afrikaans mode activated"
-                    else "English mode activated"
-                )
-                true
             }
         }
 
@@ -97,26 +93,23 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            ttsReady = true
-            setSpeechLanguage()
-        }
-    }
+            val result = tts.setLanguage(simmyLanguage)
 
-    private fun setSpeechLanguage() {
-        if (!ttsReady) return
-
-        val result = if (isAfrikaans) {
-            tts.setLanguage(Locale("af", "ZA"))
+            if (result == TextToSpeech.LANG_MISSING_DATA ||
+                result == TextToSpeech.LANG_NOT_SUPPORTED
+            ) {
+                Toast.makeText(
+                    this,
+                    "English South Africa voice is not installed. Please install it in your phone's Text-to-Speech settings.",
+                    Toast.LENGTH_LONG
+                ).show()
+            } else {
+                ttsReady = true
+            }
         } else {
-            tts.setLanguage(Locale("en", "ZA"))
-        }
-
-        if (result == TextToSpeech.LANG_MISSING_DATA ||
-            result == TextToSpeech.LANG_NOT_SUPPORTED
-        ) {
             Toast.makeText(
                 this,
-                "This language is not available for speech.",
+                "SIMMY voice could not start.",
                 Toast.LENGTH_LONG
             ).show()
         }
@@ -149,7 +142,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             Toast.makeText(
                 this,
-                "Speech recognition is not available on this device.",
+                "Speech recognition is not available on this phone.",
                 Toast.LENGTH_LONG
             ).show()
             return
@@ -158,7 +151,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         try {
             speechRecognizer?.destroy()
 
-            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+            speechRecognizer =
+                SpeechRecognizer.createSpeechRecognizer(this)
 
             speechRecognizer?.setRecognitionListener(
                 object : RecognitionListener {
@@ -176,7 +170,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     override fun onError(error: Int) {
                         Toast.makeText(
                             this@MainActivity,
-                            "I couldn't hear you. Tap the circle and try again.",
+                            "I couldn't hear you. Please tap SIMMY and try again.",
                             Toast.LENGTH_SHORT
                         ).show()
                     }
@@ -197,7 +191,10 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
                     override fun onPartialResults(partialResults: Bundle?) {}
 
-                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                    override fun onEvent(
+                        eventType: Int,
+                        params: Bundle?
+                    ) {}
                 }
             )
 
@@ -210,7 +207,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                 )
                 putExtra(
                     RecognizerIntent.EXTRA_LANGUAGE,
-                    if (isAfrikaans) "af-ZA" else "en-ZA"
+                    "en-ZA"
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE,
+                    "en-ZA"
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE,
+                    true
                 )
                 putExtra(
                     RecognizerIntent.EXTRA_MAX_RESULTS,
@@ -227,7 +232,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         } catch (e: Exception) {
             Toast.makeText(
                 this,
-                "Could not start listening.",
+                "SIMMY could not start listening.",
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -237,16 +242,13 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         when {
             command.contains("hello") ||
             command.contains("hi simmy") -> {
-                speak(
-                    if (isAfrikaans) "Hallo! Hoe kan ek help?"
-                    else "Hello! How can I help?"
-                )
+                speak("Hello! I am SIMMY. How can I help you?")
             }
 
             command.contains("time") -> {
                 val time = SimpleDateFormat(
                     "HH:mm",
-                    Locale.getDefault()
+                    Locale.UK
                 ).format(Date())
 
                 speak("The time is $time")
@@ -268,7 +270,9 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
             command.contains("camera") -> {
                 openIntent(
-                    Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                    Intent(
+                        android.provider.MediaStore.ACTION_IMAGE_CAPTURE
+                    )
                 )
             }
 
@@ -303,10 +307,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
             else -> {
                 speak(
-                    if (isAfrikaans)
-                        "Ek verstaan nie daardie opdrag nie."
-                    else
-                        "Sorry, I don't understand that command yet."
+                    "I heard you, but I do not understand that command yet."
                 )
             }
         }
@@ -345,7 +346,8 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun speak(message: String) {
         if (ttsReady) {
-            setSpeechLanguage()
+            tts.language = simmyLanguage
+
             tts.speak(
                 message,
                 TextToSpeech.QUEUE_FLUSH,

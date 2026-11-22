@@ -7,7 +7,9 @@ import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.speech.RecognitionListener
 import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.view.Gravity
 import android.view.View
@@ -17,16 +19,18 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import java.text.SimpleDateFormat
+import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private lateinit var tts: TextToSpeech
     private var ttsReady = false
+    private var speechRecognizer: SpeechRecognizer? = null
     private var isAfrikaans = false
 
     private val microphoneRequestCode = 100
-    private val speechRequestCode = 101
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -34,9 +38,6 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         window.setBackgroundDrawable(ColorDrawable(Color.TRANSPARENT))
         window.statusBarColor = Color.TRANSPARENT
         window.navigationBarColor = Color.BLACK
-        window.decorView.systemUiVisibility =
-            View.SYSTEM_UI_FLAG_LAYOUT_STABLE or
-            View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
 
         tts = TextToSpeech(this, this)
 
@@ -58,14 +59,15 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             )
         )
 
-        // Invisible touch area over the glowing circle.
         val talkButton = View(this).apply {
             setBackgroundColor(Color.TRANSPARENT)
+            background = ColorDrawable(Color.TRANSPARENT)
             isClickable = true
-            isFocusable = true
+
             setOnClickListener {
                 startListening()
             }
+
             setOnLongClickListener {
                 isAfrikaans = !isAfrikaans
                 speak(
@@ -76,15 +78,17 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
         }
 
-        val buttonSize = (190 * resources.displayMetrics.density).toInt()
+        val buttonSize =
+            (190 * resources.displayMetrics.density).toInt()
 
-        val buttonParams = FrameLayout.LayoutParams(
-            buttonSize,
-            buttonSize,
-            Gravity.CENTER
+        root.addView(
+            talkButton,
+            FrameLayout.LayoutParams(
+                buttonSize,
+                buttonSize,
+                Gravity.CENTER
+            )
         )
-
-        root.addView(talkButton, buttonParams)
 
         setContentView(root)
 
@@ -93,12 +97,28 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            tts.language = if (isAfrikaans) {
-                Locale("af", "ZA")
-            } else {
-                Locale("en", "ZA")
-            }
             ttsReady = true
+            setSpeechLanguage()
+        }
+    }
+
+    private fun setSpeechLanguage() {
+        if (!ttsReady) return
+
+        val result = if (isAfrikaans) {
+            tts.setLanguage(Locale("af", "ZA"))
+        } else {
+            tts.setLanguage(Locale("en", "ZA"))
+        }
+
+        if (result == TextToSpeech.LANG_MISSING_DATA ||
+            result == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
+            Toast.makeText(
+                this,
+                "This language is not available for speech.",
+                Toast.LENGTH_LONG
+            ).show()
         }
     }
 
@@ -126,50 +146,90 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             return
         }
 
-        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
-                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
-            )
-            putExtra(
-                RecognizerIntent.EXTRA_LANGUAGE,
-                if (isAfrikaans) "af-ZA" else "en-ZA"
-            )
-            putExtra(RecognizerIntent.EXTRA_PROMPT, "Listening to you...")
-            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            Toast.makeText(
+                this,
+                "Speech recognition is not available on this device.",
+                Toast.LENGTH_LONG
+            ).show()
+            return
         }
 
         try {
-            startActivityForResult(intent, speechRequestCode)
+            speechRecognizer?.destroy()
+
+            speechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+
+            speechRecognizer?.setRecognitionListener(
+                object : RecognitionListener {
+
+                    override fun onReadyForSpeech(params: Bundle?) {}
+
+                    override fun onBeginningOfSpeech() {}
+
+                    override fun onRmsChanged(rmsdB: Float) {}
+
+                    override fun onBufferReceived(buffer: ByteArray?) {}
+
+                    override fun onEndOfSpeech() {}
+
+                    override fun onError(error: Int) {
+                        Toast.makeText(
+                            this@MainActivity,
+                            "I couldn't hear you. Tap the circle and try again.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        val matches = results?.getStringArrayList(
+                            SpeechRecognizer.RESULTS_RECOGNITION
+                        )
+
+                        val spokenText = matches?.firstOrNull()
+
+                        if (!spokenText.isNullOrBlank()) {
+                            handleCommand(
+                                spokenText.lowercase(Locale.ROOT)
+                            )
+                        }
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {}
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {}
+                }
+            )
+
+            val intent = Intent(
+                RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+            ).apply {
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE,
+                    if (isAfrikaans) "af-ZA" else "en-ZA"
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_MAX_RESULTS,
+                    3
+                )
+                putExtra(
+                    RecognizerIntent.EXTRA_PARTIAL_RESULTS,
+                    false
+                )
+            }
+
+            speechRecognizer?.startListening(intent)
+
         } catch (e: Exception) {
             Toast.makeText(
                 this,
-                "Speech recognition is not available",
-                Toast.LENGTH_LONG
+                "Could not start listening.",
+                Toast.LENGTH_SHORT
             ).show()
-        }
-    }
-
-    @Deprecated("Deprecated in Android")
-    override fun onActivityResult(
-        requestCode: Int,
-        resultCode: Int,
-        data: Intent?
-    ) {
-        super.onActivityResult(requestCode, resultCode, data)
-
-        if (requestCode == speechRequestCode &&
-            resultCode == RESULT_OK
-        ) {
-            val results = data?.getStringArrayListExtra(
-                RecognizerIntent.EXTRA_RESULTS
-            )
-
-            val spokenText = results?.firstOrNull()?.lowercase(Locale.ROOT)
-
-            if (!spokenText.isNullOrBlank()) {
-                handleCommand(spokenText)
-            }
         }
     }
 
@@ -177,15 +237,17 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         when {
             command.contains("hello") ||
             command.contains("hi simmy") -> {
-                speak(if (isAfrikaans) "Hallo! Hoe kan ek help?" else "Hello! How can I help?")
+                speak(
+                    if (isAfrikaans) "Hallo! Hoe kan ek help?"
+                    else "Hello! How can I help?"
+                )
             }
 
-            command.contains("time") ||
-            command.contains("what time") -> {
-                val time = java.text.SimpleDateFormat(
+            command.contains("time") -> {
+                val time = SimpleDateFormat(
                     "HH:mm",
                     Locale.getDefault()
-                ).format(java.util.Date())
+                ).format(Date())
 
                 speak("The time is $time")
             }
@@ -205,21 +267,25 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
             }
 
             command.contains("camera") -> {
-                openIntent(Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE))
+                openIntent(
+                    Intent(android.provider.MediaStore.ACTION_IMAGE_CAPTURE)
+                )
             }
 
             command.contains("settings") -> {
-                openIntent(Intent(android.provider.Settings.ACTION_SETTINGS))
+                openIntent(
+                    Intent(android.provider.Settings.ACTION_SETTINGS)
+                )
             }
 
-            command.contains("google") ||
-            command.contains("search") -> {
+            command.contains("search") ||
+            command.contains("google") -> {
                 val searchText = command
                     .replace("search", "")
                     .replace("google", "")
                     .trim()
 
-                val searchIntent = Intent(
+                val intent = Intent(
                     Intent.ACTION_WEB_SEARCH
                 ).apply {
                     putExtra(
@@ -228,7 +294,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
                     )
                 }
 
-                openIntent(searchIntent)
+                openIntent(intent)
             }
 
             command.contains("stop") -> {
@@ -237,20 +303,31 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
             else -> {
                 speak(
-                    if (isAfrikaans) "Ek het jou gehoor, maar ek verstaan nie daardie opdrag nie."
-                    else "I heard you, but I don't understand that command yet."
+                    if (isAfrikaans)
+                        "Ek verstaan nie daardie opdrag nie."
+                    else
+                        "Sorry, I don't understand that command yet."
                 )
             }
         }
     }
 
-    private fun openAppOrWebsite(packageName: String, website: String) {
-        val launchIntent = packageManager.getLaunchIntentForPackage(packageName)
+    private fun openAppOrWebsite(
+        packageName: String,
+        website: String
+    ) {
+        val launchIntent =
+            packageManager.getLaunchIntentForPackage(packageName)
 
         if (launchIntent != null) {
             startActivity(launchIntent)
         } else {
-            openIntent(Intent(Intent.ACTION_VIEW, android.net.Uri.parse(website)))
+            openIntent(
+                Intent(
+                    Intent.ACTION_VIEW,
+                    android.net.Uri.parse(website)
+                )
+            )
         }
     }
 
@@ -268,12 +345,7 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
 
     private fun speak(message: String) {
         if (ttsReady) {
-            tts.language = if (isAfrikaans) {
-                Locale("af", "ZA")
-            } else {
-                Locale("en", "ZA")
-            }
-
+            setSpeechLanguage()
             tts.speak(
                 message,
                 TextToSpeech.QUEUE_FLUSH,
@@ -283,11 +355,38 @@ class MainActivity : ComponentActivity(), TextToSpeech.OnInitListener {
         }
     }
 
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(
+            requestCode,
+            permissions,
+            grantResults
+        )
+
+        if (requestCode == microphoneRequestCode &&
+            grantResults.isNotEmpty() &&
+            grantResults[0] == PackageManager.PERMISSION_GRANTED
+        ) {
+            Toast.makeText(
+                this,
+                "SIMMY microphone is ready.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+
     override fun onDestroy() {
+        speechRecognizer?.destroy()
+        speechRecognizer = null
+
         if (::tts.isInitialized) {
             tts.stop()
             tts.shutdown()
         }
+
         super.onDestroy()
     }
 }

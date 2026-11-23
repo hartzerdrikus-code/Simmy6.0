@@ -1,3 +1,4 @@
+
 package com.simmy.assistant
 
 import android.Manifest
@@ -2015,6 +2016,7 @@ class BackgroundWakeService : Service(),
                 skipMusic()
             }
 
+            // Explicit YouTube or YouTube Music requests
             text.startsWith("play ") &&
                 (text.contains(" on youtube music") ||
                     text.contains(" on youtube")) -> {
@@ -2027,6 +2029,13 @@ class BackgroundWakeService : Service(),
 
                 val music = text.contains("youtube music")
                 playOnYouTube(song, music)
+            }
+
+            // NEW: Simple music command.
+            // "Play Jerusalema" opens YouTube Music search.
+            text.startsWith("play ") -> {
+                val song = text.removePrefix("play ").trim()
+                playOnYouTube(song, true)
             }
 
             text.startsWith("search google for ") -> {

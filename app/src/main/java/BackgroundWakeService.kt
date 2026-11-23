@@ -1,4 +1,3 @@
-
 package com.simmy.assistant
 
 import android.Manifest
@@ -34,6 +33,7 @@ import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
+import android.view.KeyEvent
 import android.view.WindowManager
 import android.widget.ImageView
 import android.widget.Toast
@@ -114,7 +114,9 @@ class BackgroundWakeService : Service(),
     private var readyMessageSpoken = false
     private var speaking = false
     private var recoveryScheduled = false
+
     private var timerRunnable: Runnable? = null
+    private var timerEndTimeMillis: Long? = null
 
     private var lastProcessedText = ""
     private var lastProcessedTime = 0L
@@ -1545,6 +1547,196 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    // MEDIA PLAYBACK CONTROLS
+
+    private fun sendMediaKey(keyCode: Int) {
+        try {
+            val audioManager =
+                getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+            val downEvent = KeyEvent(
+                KeyEvent.ACTION_DOWN,
+                keyCode
+            )
+
+            val upEvent = KeyEvent(
+                KeyEvent.ACTION_UP,
+                keyCode
+            )
+
+            audioManager.dispatchMediaKeyEvent(downEvent)
+            audioManager.dispatchMediaKeyEvent(upEvent)
+
+        } catch (_: Exception) {
+            showMessage("SIMMY could not control media playback.")
+        }
+    }
+
+    private fun pauseMusic() {
+        sendMediaKey(KeyEvent.KEYCODE_MEDIA_PAUSE)
+        speak("Pausing music.")
+    }
+
+    private fun resumeMusic() {
+        sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+        speak("Resuming music.")
+    }
+
+    private fun skipMusic() {
+        sendMediaKey(KeyEvent.KEYCODE_MEDIA_NEXT)
+        speak("Skipping to the next track.")
+    }
+
+    // GOOGLE SEARCH
+
+    private fun searchGoogle(query: String) {
+        if (query.isBlank()) {
+            speak("What would you like me to search for?")
+            return
+        }
+
+        try {
+            val url = "https://www.google.com/search?q=${Uri.encode(query)}"
+
+            val intent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse(url)
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val chromeIntent = Intent(intent).apply {
+                setPackage("com.android.chrome")
+            }
+
+            try {
+                startActivity(chromeIntent)
+            } catch (_: Exception) {
+                startActivity(intent)
+            }
+
+            speak("Searching Google for $query.")
+
+        } catch (_: Exception) {
+            speak("I couldn't open Google search.")
+        }
+    }
+
+    // YOUTUBE SEARCH AND PLAYBACK
+
+    private fun playOnYouTube(
+        song: String,
+        useYouTubeMusic: Boolean
+    ) {
+        if (song.isBlank()) {
+            speak("Please tell me which song you want to play.")
+            return
+        }
+
+        try {
+            val url = if (useYouTubeMusic) {
+                "https://music.youtube.com/search?q=${Uri.encode(song)}"
+            } else {
+                "https://www.youtube.com/results?search_query=${Uri.encode(song)}"
+            }
+
+            val intent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse(url)
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val targetPackage = if (useYouTubeMusic) {
+                "com.google.android.apps.youtube.music"
+            } else {
+                "com.google.android.youtube"
+            }
+
+            val appIntent = Intent(intent).apply {
+                setPackage(targetPackage)
+            }
+
+            try {
+                startActivity(appIntent)
+            } catch (_: Exception) {
+                startActivity(intent)
+            }
+
+            speak("I found $song. I'll try to start playback.")
+
+            // Best-effort playback request after the YouTube page opens.
+            handler.postDelayed({
+                if (isRunning) {
+                    sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
+                }
+            }, 3500)
+
+        } catch (_: Exception) {
+            speak("I couldn't open YouTube.")
+        }
+    }
+
+    // WHATSAPP CONTACT CHAT
+
+    private fun openWhatsAppContact(name: String) {
+        if (name.isBlank()) {
+            speak("Please say the contact name.")
+            return
+        }
+
+        val number = findContactNumber(name)
+
+        if (number.isNullOrBlank()) {
+            speak("I couldn't find that contact.")
+            return
+        }
+
+        try {
+            var digits = number.filter { it.isDigit() }
+
+            // Convert a South African local number to international format.
+            if (digits.startsWith("0") && digits.length >= 10) {
+                digits = "27" + digits.drop(1)
+            }
+
+            if (digits.isBlank()) {
+                speak("That contact does not have a valid phone number.")
+                return
+            }
+
+            val url = "https://wa.me/$digits"
+
+            val intent = Intent(
+                Intent.ACTION_VIEW,
+                Uri.parse(url)
+            ).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            try {
+                val whatsappIntent = Intent(intent).apply {
+                    setPackage("com.whatsapp")
+                }
+                startActivity(whatsappIntent)
+            } catch (_: Exception) {
+                try {
+                    val businessIntent = Intent(intent).apply {
+                        setPackage("com.whatsapp.w4b")
+                    }
+                    startActivity(businessIntent)
+                } catch (_: Exception) {
+                    startActivity(intent)
+                }
+            }
+
+            speak("Opening WhatsApp chat for $name.")
+
+        } catch (_: Exception) {
+            speak("I couldn't open that WhatsApp chat.")
+        }
+    }
+
     // VOICE COMMANDS
 
     private fun executeCommand(command: String) {
@@ -1569,6 +1761,96 @@ class BackgroundWakeService : Service(),
                     stopSelf()
                 }, 2000)
             }
+
+            // TIMER REMAINING TIME
+
+            text.contains("time left") ||
+                text.contains("time remaining") ||
+                text.contains("how much longer") ||
+                text.contains("check timer") ||
+                text.contains("timer remaining") ||
+                text.contains("remaining on timer") -> {
+                tellTimerRemaining()
+            }
+
+            // MEDIA CONTROLS
+
+            text == "pause" ||
+                text.contains("pause music") ||
+                text.contains("pause song") ||
+                text.contains("stop music") -> {
+                pauseMusic()
+            }
+
+            text == "resume" ||
+                text == "play" ||
+                text.contains("resume music") ||
+                text.contains("continue music") ||
+                text.contains("continue playing") ||
+                text.contains("play music") -> {
+                resumeMusic()
+            }
+
+            text.contains("skip song") ||
+                text.contains("next song") ||
+                text.contains("next track") ||
+                text == "skip" -> {
+                skipMusic()
+            }
+
+            // YOUTUBE MUSIC SEARCH
+
+            text.startsWith("play ") &&
+                (text.contains(" on youtube music") ||
+                    text.contains(" on youtube")) -> {
+
+                val song = text
+                    .removePrefix("play ")
+                    .replace(" on youtube music", "")
+                    .replace(" on youtube", "")
+                    .trim()
+
+                val music = text.contains("youtube music")
+                playOnYouTube(song, music)
+            }
+
+            // GOOGLE SEARCH
+
+            text.startsWith("search google for ") -> {
+                searchGoogle(text.removePrefix("search google for ").trim())
+            }
+
+            text.startsWith("google search for ") -> {
+                searchGoogle(text.removePrefix("google search for ").trim())
+            }
+
+            text.startsWith("search chrome for ") -> {
+                searchGoogle(text.removePrefix("search chrome for ").trim())
+            }
+
+            text.startsWith("search for ") -> {
+                searchGoogle(text.removePrefix("search for ").trim())
+            }
+
+            text.startsWith("google ") -> {
+                searchGoogle(text.removePrefix("google ").trim())
+            }
+
+            // WHATSAPP CONTACT
+
+            text.startsWith("whatsapp ") -> {
+                openWhatsAppContact(
+                    text.removePrefix("whatsapp ").trim()
+                )
+            }
+
+            text.startsWith("open whatsapp chat ") -> {
+                openWhatsAppContact(
+                    text.removePrefix("open whatsapp chat ").trim()
+                )
+            }
+
+            // TIMER
 
             text.contains("timer") -> {
                 startTimer(text)
@@ -1667,6 +1949,11 @@ class BackgroundWakeService : Service(),
                 openNamedApp("youtube")
             }
 
+            text == "youtube music" ||
+                text == "open youtube music" -> {
+                openNamedApp("youtube music")
+            }
+
             text == "whatsapp" ||
                 text == "open whatsapp" -> {
                 openNamedApp("whatsapp")
@@ -1736,7 +2023,7 @@ class BackgroundWakeService : Service(),
 
     private fun startTimer(command: String) {
         val numberPattern =
-            "(\\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|" +
+            "(?:\\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|" +
                 "eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|" +
                 "eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|" +
                 "eighty|ninety)(?:[ -](?:one|two|three|four|five|six|seven|" +
@@ -1751,7 +2038,8 @@ class BackgroundWakeService : Service(),
 
         for (match in timePattern.findAll(command)) {
             val amount = parseTimerNumber(match.groupValues[1]) ?: continue
-            val unit = match.groupValues.last().lowercase(Locale.ROOT)
+            val unit = match.groupValues[2].lowercase(Locale.ROOT)
+
             val multiplier = when {
                 unit.startsWith("hour") || unit.startsWith("hr") -> 3600L
                 unit.startsWith("second") || unit.startsWith("sec") -> 1L
@@ -1765,6 +2053,7 @@ class BackgroundWakeService : Service(),
 
             totalSeconds += amount * multiplier
             foundDuration = true
+
             if (totalSeconds > 604800L) {
                 speak("Please choose a timer of seven days or less.")
                 return
@@ -1774,11 +2063,13 @@ class BackgroundWakeService : Service(),
         if (!foundDuration) {
             val simpleNumber = Regex("\\b\\d+\\b")
                 .find(command)?.value?.toLongOrNull()
+
             if (simpleNumber != null) {
                 if (simpleNumber > 604800L / 60L) {
                     speak("Please choose a timer of seven days or less.")
                     return
                 }
+
                 totalSeconds = simpleNumber * 60L
                 foundDuration = true
             }
@@ -1794,17 +2085,67 @@ class BackgroundWakeService : Service(),
             return
         }
 
-        timerRunnable?.let { handler.removeCallbacks(it) }
+        timerRunnable?.let {
+            handler.removeCallbacks(it)
+        }
+
+        timerEndTimeMillis =
+            System.currentTimeMillis() + totalSeconds * 1000L
 
         timerRunnable = Runnable {
             if (isRunning) {
                 timerRunnable = null
+                timerEndTimeMillis = null
                 speak("Your timer is finished.")
             }
         }
 
-        handler.postDelayed(timerRunnable!!, totalSeconds * 1000L)
+        handler.postDelayed(
+            timerRunnable!!,
+            totalSeconds * 1000L
+        )
+
         speak("Timer started.")
+    }
+
+    private fun tellTimerRemaining() {
+        val endTime = timerEndTimeMillis
+
+        if (endTime == null) {
+            speak("There is no active timer.")
+            return
+        }
+
+        val remainingMillis = endTime - System.currentTimeMillis()
+
+        if (remainingMillis <= 0L) {
+            timerEndTimeMillis = null
+            speak("Your timer has finished.")
+            return
+        }
+
+        val remainingSeconds =
+            (remainingMillis + 999L) / 1000L
+
+        val hours = remainingSeconds / 3600L
+        val minutes = (remainingSeconds % 3600L) / 60L
+        val seconds = remainingSeconds % 60L
+
+        val parts = mutableListOf<String>()
+
+        if (hours > 0) {
+            parts.add("$hours ${if (hours == 1L) "hour" else "hours"}")
+        }
+
+        if (minutes > 0) {
+            parts.add("$minutes ${if (minutes == 1L) "minute" else "minutes"}")
+        }
+
+        if (seconds > 0) {
+            parts.add("$seconds ${if (seconds == 1L) "second" else "seconds"}")
+        }
+
+        speak("Your timer has ${parts.joinToString(" and ")} remaining.")
     }
 
     // CONTACTS AND CALLING
@@ -2149,7 +2490,9 @@ class BackgroundWakeService : Service(),
         timerRunnable?.let {
             handler.removeCallbacks(it)
         }
+
         timerRunnable = null
+        timerEndTimeMillis = null
 
         removeSimmyOverlay()
         handler.removeCallbacksAndMessages(null)

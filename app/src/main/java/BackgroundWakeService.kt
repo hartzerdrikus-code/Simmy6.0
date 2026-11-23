@@ -1,4 +1,3 @@
-
 package com.simmy.assistant
 
 import android.Manifest
@@ -869,6 +868,104 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    // SIMMY PERSONALITY
+
+    private fun personaliseSpeech(message: String): String {
+        return when (message.trim()) {
+            "Yes, I'm listening." ->
+                "Yes, boss! I'm all ears. Go on!"
+
+            "Goodbye." ->
+                "See you later, boss! Try not to miss me too much."
+
+            "Conversation ended. Say Mamma or Simon when you need me." ->
+                "Conversation finished, boss. Call me when you need my brilliance!"
+
+            "Timer started." ->
+                "Timer started, boss! I'll keep an eye on the clock."
+
+            "Your timer is finished." ->
+                "Hey boss! Time's up! I did my job beautifully."
+
+            "Your timer has finished." ->
+                "Your timer has finished, boss. Nailed it!"
+
+            "There is no active timer." ->
+                "No timer is running, boss. The clock is having a little holiday."
+
+            "Opening settings." ->
+                "Settings coming right up, boss!"
+
+            "Opening Bluetooth settings." ->
+                "Bluetooth settings coming right up. Let's get those devices talking!"
+
+            "Opening Wi-Fi settings." ->
+                "Opening Wi-Fi settings. Let's get you connected!"
+
+            "Pausing music." ->
+                "Music paused. Taking a little break, are we?"
+
+            "Resuming music." ->
+                "Music is back! Let's get this party started."
+
+            "Skipping to the next track." ->
+                "Skipping that one. Let's see if the next song is any better!"
+
+            "Volume increased." ->
+                "Volume turned up. Now that's better!"
+
+            "Volume decreased." ->
+                "Volume turned down. Nice and easy."
+
+            "Media muted." ->
+                "Muted! Peace and quiet at last."
+
+            "Media unmuted." ->
+                "Sound is back. Let the noise begin!"
+
+            "I don't have any new messages." ->
+                "No new messages, boss. Your phone is being unusually quiet."
+
+            "I couldn't find that contact." ->
+                "I couldn't find that contact, boss. Maybe they're hiding!"
+
+            "Flashlight switched on." ->
+                "Flashlight on! Let there be light!"
+
+            "Flashlight switched off." ->
+                "Flashlight off. Darkness restored!"
+
+            "I couldn't open Google search." ->
+                "Google isn't playing along. I couldn't open the search."
+
+            "SIMMY voice is not ready yet." ->
+                "My voice isn't ready yet, boss. Give me a moment!"
+
+            "Sorry, I don't understand that command yet." ->
+                "I'm not quite sure what you mean, boss. Try saying that another way."
+
+            "I didn't catch that. Please say your command again." ->
+                "Oops, I missed that! Say it again for me, boss."
+
+            "What would you like me to write?" ->
+                "What shall I write down, boss? I'm ready to take notes!"
+
+            "Your note is ready. Tap the notification to open Samsung Notes." ->
+                "Your note is ready, boss! Tap the notification and save my masterpiece."
+
+            "I've sent your note to Samsung Notes. Please save it there." ->
+                "Note delivered to Samsung Notes! Just save it there, boss."
+
+            "Opening Voice Recorder. Tap Record if recording doesn't start automatically." ->
+                "Voice Recorder is opening! Tap Record if it doesn't start by itself."
+
+            "Searching Google for" ->
+                "Let's ask Google. Searching now!"
+
+            else -> message
+        }
+    }
+
     private fun speak(message: String) {
         if (!isRunning) return
 
@@ -879,8 +976,10 @@ class BackgroundWakeService : Service(),
 
         speechService?.setPause(true)
 
+        val spokenMessage = personaliseSpeech(message)
+
         val result = textToSpeech?.speak(
-            message,
+            spokenMessage,
             TextToSpeech.QUEUE_FLUSH,
             null,
             "SIMMY_${System.currentTimeMillis()}"
@@ -2031,7 +2130,7 @@ class BackgroundWakeService : Service(),
                 playOnYouTube(song, music)
             }
 
-            // NEW: Simple music command.
+            // Simple music command.
             // "Play Jerusalema" opens YouTube Music search.
             text.startsWith("play ") -> {
                 val song = text.removePrefix("play ").trim()

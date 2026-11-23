@@ -9,13 +9,18 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.graphics.PixelFormat
 import android.graphics.drawable.GradientDrawable
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
+import android.media.AudioManager
 import android.net.Uri
+import android.os.BatteryManager
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -658,7 +663,7 @@ class BackgroundWakeService : Service(),
 
         try {
             speechService?.setPause(false)
-            updateNotification("Listening for Hi, Make a note, or Start recording.")
+            updateNotification("SIMMY is listening.")
         } catch (_: Exception) {
         }
     }
@@ -712,7 +717,6 @@ class BackgroundWakeService : Service(),
         handler.post {
             if (!isRunning) return@post
 
-            // Ignore duplicate callbacks for the same spoken phrase.
             val now = System.currentTimeMillis()
             if (words == lastProcessedText &&
                 now - lastProcessedTime < 1800
@@ -737,14 +741,12 @@ class BackgroundWakeService : Service(),
 
         updateNotification("SIMMY heard: $normalised")
 
-        // When SIMMY is collecting note text, the next phrase is the note.
         if (awaitingNoteContent) {
             awaitingNoteContent = false
             saveNoteInSamsungNotes(normalised)
             return
         }
 
-        // These two phrases work directly, without saying Hi first.
         if (normalised == "make a note" ||
             normalised.startsWith("make a note ")
         ) {
@@ -759,7 +761,6 @@ class BackgroundWakeService : Service(),
             return
         }
 
-        // "Hi" is now the only normal wake word.
         if (normalised == "hi" || normalised.startsWith("hi ")) {
             val command = normalised
                 .removePrefix("hi")
@@ -875,6 +876,152 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    // PHONE CONTROLS
+
+    private fun setFlashlight(enabled: Boolean) {
+        if (checkSelfPermission(Manifest.permission.CAMERA) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            speak("Please allow SIMMY camera permission.")
+
+            try {
+                val intent = Intent(
+                    Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                    Uri.parse("package:$packageName")
+                ).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            } catch (_: Exception) {
+                showMessage("Open SIMMY app permissions in phone settings.")
+            }
+            return
+        }
+
+        try {
+            val cameraManager =
+                getSystemService(Context.CAMERA_SERVICE) as CameraManager
+
+            val cameraId = cameraManager.cameraIdList.firstOrNull { id ->
+                cameraManager.getCameraCharacteristics(id)
+                    .get(CameraCharacteristics.FLASH_INFO_AVAILABLE) == true
+            }
+
+            if (cameraId == null) {
+                speak("Your phone flashlight is unavailable.")
+                return
+            }
+
+            cameraManager.setTorchMode(cameraId, enabled)
+
+            speak(
+                if (enabled) "Flashlight switched on."
+                else "Flashlight switched off."
+            )
+        } catch (_: Exception) {
+            speak("I couldn't control the flashlight. Please check camera permission.")
+        }
+    }
+
+    private fun changeVolume(direction: Int) {
+        try {
+            val audioManager =
+                getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+            audioManager.adjustStreamVolume(
+                AudioManager.STREAM_MUSIC,
+                direction,
+                AudioManager.FLAG_SHOW_UI
+            )
+
+            when (direction) {
+                AudioManager.ADJUST_RAISE -> speak("Volume increased.")
+                AudioManager.ADJUST_LOWER -> speak("Volume decreased.")
+                AudioManager.ADJUST_MUTE -> speak("Media muted.")
+                AudioManager.ADJUST_UNMUTE -> speak("Media unmuted.")
+            }
+        } catch (_: Exception) {
+            speak("I couldn't change the volume.")
+        }
+    }
+
+    private fun setBrightnessFromCommand(command: String) {
+        val percentage = Regex("""(\d{1,3})\s*%?""")
+            .find(command)
+            ?.groupValues
+            ?.getOrNull(1)
+            ?.toIntOrNull()
+
+        if (percentage == null || percentage !in 1..100) {
+            speak("Please say a brightness percentage between 1 and 100.")
+            return
+        }
+
+        if (!Settings.System.canWrite(this)) {
+            speak("Please allow SIMMY to modify system settings.")
+
+            try {
+                val intent = Intent(
+                    Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                    Uri.parse("package:$packageName")
+                ).apply {
+                    flags = Intent.FLAG_ACTIVITY_NEW_TASK
+                }
+                startActivity(intent)
+            } catch (_: Exception) {
+                showMessage("Allow Modify system settings for SIMMY in phone settings.")
+            }
+            return
+        }
+
+        try {
+            val brightness = (percentage * 255) / 100
+
+            Settings.System.putInt(
+                contentResolver,
+                Settings.System.SCREEN_BRIGHTNESS,
+                brightness
+            )
+
+            speak("Brightness set to $percentage percent.")
+        } catch (_: Exception) {
+            speak("I couldn't change the brightness.")
+        }
+    }
+
+    private fun tellBatteryLevel() {
+        try {
+            val batteryIntent = registerReceiver(
+                null,
+                IntentFilter(Intent.ACTION_BATTERY_CHANGED)
+            )
+
+            if (batteryIntent == null) {
+                speak("I couldn't check the battery.")
+                return
+            }
+
+            val level = batteryIntent.getIntExtra(
+                BatteryManager.EXTRA_LEVEL,
+                -1
+            )
+
+            val scale = batteryIntent.getIntExtra(
+                BatteryManager.EXTRA_SCALE,
+                -1
+            )
+
+            if (level >= 0 && scale > 0) {
+                val percentage = (level * 100) / scale
+                speak("Your battery is at $percentage percent.")
+            } else {
+                speak("I couldn't read the battery level.")
+            }
+        } catch (_: Exception) {
+            speak("I couldn't check your battery level.")
+        }
+    }
+
     // VOICE COMMANDS
 
     private fun executeCommand(command: String) {
@@ -887,6 +1034,54 @@ class BackgroundWakeService : Service(),
 
             text.contains("start recording") -> {
                 startVoiceRecording()
+            }
+
+            text.contains("flashlight") ||
+                text.contains("torch") -> {
+                when {
+                    text.contains("off") -> setFlashlight(false)
+                    text.contains("on") -> setFlashlight(true)
+                    else -> speak("Please say turn flashlight on or turn flashlight off.")
+                }
+            }
+
+            text.contains("increase volume") ||
+                text.contains("volume up") ||
+                text.contains("turn volume up") -> {
+                changeVolume(AudioManager.ADJUST_RAISE)
+            }
+
+            text.contains("decrease volume") ||
+                text.contains("volume down") ||
+                text.contains("turn volume down") -> {
+                changeVolume(AudioManager.ADJUST_LOWER)
+            }
+
+            text.contains("unmute") -> {
+                changeVolume(AudioManager.ADJUST_UNMUTE)
+            }
+
+            text.contains("mute") -> {
+                changeVolume(AudioManager.ADJUST_MUTE)
+            }
+
+            text.contains("brightness") -> {
+                setBrightnessFromCommand(text)
+            }
+
+            text.contains("battery") -> {
+                tellBatteryLevel()
+            }
+
+            text.contains("bluetooth") -> {
+                speak("Opening Bluetooth settings.")
+                openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
+            }
+
+            text.contains("wifi") ||
+                text.contains("wi fi") -> {
+                speak("Opening Wi-Fi settings.")
+                openSettings(Settings.ACTION_WIFI_SETTINGS)
             }
 
             text.contains("time") -> {
@@ -917,11 +1112,6 @@ class BackgroundWakeService : Service(),
                 } else {
                     speak(message)
                 }
-            }
-
-            text.contains("bluetooth") -> {
-                speak("Opening Bluetooth settings.")
-                openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
             }
 
             text.contains("settings") -> {

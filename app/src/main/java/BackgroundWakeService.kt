@@ -119,6 +119,13 @@ class BackgroundWakeService : Service(),
     private var lastProcessedText = ""
     private var lastProcessedTime = 0L
 
+    private var currentSpeechLanguage = "en-ZA"
+
+    private val allowedSpeechLanguages = arrayListOf(
+        "en-ZA",
+        "af-ZA"
+    )
+
     private val overlayPermissionChecker = object : Runnable {
         override fun run() {
             if (!isRunning) return
@@ -688,13 +695,7 @@ class BackgroundWakeService : Service(),
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            val result = textToSpeech?.setLanguage(Locale("en", "ZA"))
-
-            if (result == TextToSpeech.LANG_MISSING_DATA ||
-                result == TextToSpeech.LANG_NOT_SUPPORTED
-            ) {
-                textToSpeech?.setLanguage(Locale.US)
-            }
+            setSpeechOutputLanguage("en-ZA")
 
             ttsReady = true
 
@@ -735,6 +736,20 @@ class BackgroundWakeService : Service(),
             announceReady()
         } else {
             showMessage("SIMMY voice is unavailable.")
+        }
+    }
+
+    private fun setSpeechOutputLanguage(languageTag: String) {
+        currentSpeechLanguage = languageTag
+
+        val locale = Locale.forLanguageTag(languageTag)
+        val result = textToSpeech?.setLanguage(locale)
+
+        if (result == TextToSpeech.LANG_MISSING_DATA ||
+            result == TextToSpeech.LANG_NOT_SUPPORTED
+        ) {
+            currentSpeechLanguage = "en-ZA"
+            textToSpeech?.setLanguage(Locale("en", "ZA"))
         }
     }
 
@@ -835,21 +850,6 @@ class BackgroundWakeService : Service(),
                                 ?.trim()
                                 ?.lowercase(Locale.ROOT)
 
-                            val detectedLanguage =
-                                if (Build.VERSION.SDK_INT >= 34) {
-                                    results?.getString(
-                                        "android.speech.extra.DETECTED_LANGUAGE"
-                                    )
-                                } else {
-                                    null
-                                }
-
-                            if (detectedLanguage == "af-ZA") {
-                                textToSpeech?.setLanguage(Locale("af", "ZA"))
-                            } else if (detectedLanguage == "en-ZA") {
-                                textToSpeech?.setLanguage(Locale("en", "ZA"))
-                            }
-
                             onlineRecognitionActive = false
                             destroyOnlineRecognizer()
 
@@ -868,6 +868,29 @@ class BackgroundWakeService : Service(),
                     }
 
                     override fun onEvent(eventType: Int, params: Bundle?) {
+                    }
+
+                    // Android 14 and newer provide language detection
+                    // through this separate callback.
+                    override fun onLanguageDetection(results: Bundle) {
+                        if (Build.VERSION.SDK_INT >= 34) {
+                            val detectedLanguage = results.getString(
+                                SpeechRecognizer.DETECTED_LANGUAGE
+                            )
+
+                            handler.post {
+                                when (detectedLanguage) {
+                                    "af-ZA" -> setSpeechOutputLanguage("af-ZA")
+                                    "en-ZA" -> setSpeechOutputLanguage("en-ZA")
+                                }
+
+                                if (!detectedLanguage.isNullOrBlank()) {
+                                    updateNotification(
+                                        "SIMMY detected language: $detectedLanguage"
+                                    )
+                                }
+                            }
+                        }
                     }
                 }
             )
@@ -888,25 +911,25 @@ class BackgroundWakeService : Service(),
                     "SIMMY is listening. Speak your command."
                 )
 
-                // Android 14 and newer: request automatic English/Afrikaans
-                // language detection and switching when the speech provider
-                // supports it and the required language models are installed.
                 if (Build.VERSION.SDK_INT >= 34) {
                     putExtra(
-                        "android.speech.extra.ENABLE_LANGUAGE_DETECTION",
+                        RecognizerIntent.EXTRA_ENABLE_LANGUAGE_DETECTION,
                         true
                     )
+
                     putStringArrayListExtra(
-                        "android.speech.extra.LANGUAGE_DETECTION_ALLOWED_LANGUAGES",
-                        arrayListOf("en-ZA", "af-ZA")
+                        RecognizerIntent.EXTRA_LANGUAGE_DETECTION_ALLOWED_LANGUAGES,
+                        ArrayList(allowedSpeechLanguages)
                     )
+
                     putExtra(
-                        "android.speech.extra.ENABLE_LANGUAGE_SWITCH",
-                        "balanced"
+                        RecognizerIntent.EXTRA_ENABLE_LANGUAGE_SWITCH,
+                        RecognizerIntent.LANGUAGE_SWITCH_BALANCED
                     )
+
                     putStringArrayListExtra(
-                        "android.speech.extra.LANGUAGE_SWITCH_ALLOWED_LANGUAGES",
-                        arrayListOf("en-ZA", "af-ZA")
+                        RecognizerIntent.EXTRA_LANGUAGE_SWITCH_ALLOWED_LANGUAGES,
+                        ArrayList(allowedSpeechLanguages)
                     )
                 }
             }
@@ -972,51 +995,119 @@ class BackgroundWakeService : Service(),
             .replace("you tube", "youtube")
             .replace("face book", "facebook")
             .replace("whats app", "whatsapp")
+            .replace("what s app", "whatsapp")
+            .replace("blue tooth", "bluetooth")
 
-        // Common Afrikaans commands translated into the English
-        // command phrases used by SIMMY.
+        // Common Afrikaans phrases. These are matched as complete
+        // phrases or at the beginning of a command, not inside words.
         val translations = listOf(
             "hoe laat is dit" to "what time is it",
+            "hoe laat is dit nou" to "what time is it",
             "wat is die tyd" to "what time is it",
+            "wat is die tyd nou" to "what time is it",
+            "sê vir my die tyd" to "what time is it",
             "wat is die datum" to "what date is it",
+            "watter datum is dit" to "what date is it",
             "watter dag is dit" to "what date is it",
+            "watter dag is dit vandag" to "what date is it",
             "vandag se datum" to "what date is it",
             "lees my boodskappe" to "read messages",
+            "lees die boodskappe" to "read messages",
             "lees boodskappe" to "read messages",
+            "lees my messages" to "read messages",
             "maak n nota" to "make a note",
+            "maak n nuwe nota" to "make a note",
+            "maak 'n nota" to "make a note",
             "maak nota" to "make a note",
+            "skryf n nota" to "make a note",
+            "skryf nota" to "make a note",
             "begin opname" to "start recording",
+            "begin die opname" to "start recording",
             "neem n opname" to "start recording",
+            "neem opname" to "start recording",
+            "begin opneem" to "start recording",
             "hou op luister" to "stop listening",
+            "hou op om te luister" to "stop listening",
             "gaan slaap" to "go to sleep",
+            "tot siens" to "goodbye",
             "skakel flitslig aan" to "turn flashlight on",
-            "sit flitslig aan" to "turn flashlight on",
             "skakel die flitslig aan" to "turn flashlight on",
+            "sit flitslig aan" to "turn flashlight on",
+            "sit die flitslig aan" to "turn flashlight on",
+            "skakel flits aan" to "turn flashlight on",
             "skakel flitslig af" to "turn flashlight off",
-            "sit flitslig af" to "turn flashlight off",
             "skakel die flitslig af" to "turn flashlight off",
+            "sit flitslig af" to "turn flashlight off",
+            "sit die flitslig af" to "turn flashlight off",
+            "skakel flits af" to "turn flashlight off",
             "volume harder" to "increase volume",
+            "maak die volume harder" to "increase volume",
+            "sit die volume harder" to "increase volume",
             "maak harder" to "increase volume",
             "volume sagter" to "decrease volume",
+            "maak die volume sagter" to "decrease volume",
+            "sit die volume sagter" to "decrease volume",
             "maak sagter" to "decrease volume",
             "maak bluetooth oop" to "open bluetooth",
+            "maak die bluetooth oop" to "open bluetooth",
+            "skakel bluetooth aan" to "open bluetooth",
             "maak wifi oop" to "open wifi",
+            "maak die wifi oop" to "open wifi",
             "maak instellings oop" to "open settings",
+            "maak die instellings oop" to "open settings",
             "maak kamera oop" to "open camera",
+            "maak die kamera oop" to "open camera",
             "maak youtube oop" to "open youtube",
             "maak whatsapp oop" to "open whatsapp",
             "maak facebook oop" to "open facebook",
-            "bel" to "call"
+            "maak instagram oop" to "open instagram",
+            "maak tiktok oop" to "open tiktok",
+            "maak google oop" to "open google",
+            "maak chrome oop" to "open chrome",
+            "maak boodskappe oop" to "open messages",
+            "maak kontakte oop" to "open contacts",
+            "maak gallery oop" to "open gallery",
+            "maak kalender oop" to "open calendar",
+            "bel" to "call",
+            "skakel" to "call"
         )
 
-        for ((afrikaans, english) in translations) {
-            text = text.replace(afrikaans, english)
+        for ((afrikaans, english) in translations.sortedByDescending {
+            it.first.length
+        }) {
+            if (text == afrikaans) {
+                text = english
+                break
+            }
+
+            if (text.startsWith("$afrikaans ")) {
+                text = english + text.removePrefix(afrikaans)
+                break
+            }
         }
 
-        // General Afrikaans app-opening pattern:
+        // "Bel Jan" and "Skakel Jan" become "call Jan".
+        if (text.startsWith("bel ")) {
+            text = "call " + text.removePrefix("bel ").trim()
+        }
+
+        if (text.startsWith("skakel ")) {
+            val rest = text.removePrefix("skakel ").trim()
+
+            if (rest.isNotBlank() &&
+                !rest.startsWith("flitslig") &&
+                !rest.startsWith("die flitslig") &&
+                !rest.startsWith("flits ")
+            ) {
+                text = "call $rest"
+            }
+        }
+
+        // General Afrikaans app-opening patterns:
         // "maak [app name] oop" becomes "open [app name]".
         val makeAppOpen = Regex("^maak (.+) oop$")
         val makeOpenApp = Regex("^maak oop (.+)$")
+        val openAppAfrikaans = Regex("^open die (.+)$")
 
         makeAppOpen.find(text)?.let {
             text = "open ${it.groupValues[1]}"
@@ -1026,17 +1117,36 @@ class BackgroundWakeService : Service(),
             text = "open ${it.groupValues[1]}"
         }
 
-        if (text.startsWith("open ")) {
-            text = text.removePrefix("open ").trim()
-                .let { "open $it" }
+        openAppAfrikaans.find(text)?.let {
+            text = "open ${it.groupValues[1]}"
         }
 
-        if (text.startsWith("maak ")) {
-            text = text.removePrefix("maak ").trim()
-                .let { "open $it" }
+        // Common English variations.
+        val englishMappings = listOf(
+            "tell me the time" to "what time is it",
+            "whats the time" to "what time is it",
+            "what is the time" to "what time is it",
+            "tell me the date" to "what date is it",
+            "whats the date" to "what date is it",
+            "what is todays date" to "what date is it",
+            "open up " to "open ",
+            "launch " to "open ",
+            "start " to "open "
+        )
+
+        for ((phrase, replacement) in englishMappings) {
+            if (text == phrase.trim()) {
+                text = replacement.trim()
+                break
+            }
+
+            if (text.startsWith(phrase)) {
+                text = replacement + text.removePrefix(phrase)
+                break
+            }
         }
 
-        return text.trim()
+        return text.replace(Regex("\\s+"), " ").trim()
     }
 
     private fun showMessage(message: String) {

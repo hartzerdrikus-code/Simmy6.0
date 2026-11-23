@@ -22,11 +22,14 @@ import android.media.AudioManager
 import android.net.Uri
 import android.os.BatteryManager
 import android.os.Build
+import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.provider.ContactsContract
 import android.provider.Settings
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
@@ -67,6 +70,8 @@ class BackgroundWakeService : Service(),
         private const val MODEL_URL =
             "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
 
+        private const val ONLINE_LANGUAGE = "en-ZA"
+
         private const val NOTES_PACKAGE = "com.samsung.android.app.notes"
         private const val URECORDER_PACKAGE =
             "voicerecorder.audiorecorder.voice"
@@ -87,6 +92,11 @@ class BackgroundWakeService : Service(),
     private var recognizer: Recognizer? = null
     private var speechService: SpeechService? = null
     private var textToSpeech: TextToSpeech? = null
+
+    // Android online speech recognition
+    private var onlineSpeechRecognizer: SpeechRecognizer? = null
+    private var onlineRecognitionActive = false
+    private var startOnlineRecognitionAfterSpeech = false
 
     private var windowManager: WindowManager? = null
     private var overlayView: TextView? = null
@@ -613,14 +623,26 @@ class BackgroundWakeService : Service(),
                         override fun onDone(utteranceId: String?) {
                             handler.post {
                                 speaking = false
-                                resumeListening()
+
+                                if (startOnlineRecognitionAfterSpeech) {
+                                    startOnlineRecognitionAfterSpeech = false
+                                    startOnlineCommandListening()
+                                } else if (!onlineRecognitionActive) {
+                                    resumeListening()
+                                }
                             }
                         }
 
                         override fun onError(utteranceId: String?) {
                             handler.post {
                                 speaking = false
-                                resumeListening()
+
+                                if (startOnlineRecognitionAfterSpeech) {
+                                    startOnlineRecognitionAfterSpeech = false
+                                    startOnlineCommandListening()
+                                } else if (!onlineRecognitionActive) {
+                                    resumeListening()
+                                }
                             }
                         }
                     }
@@ -659,13 +681,168 @@ class BackgroundWakeService : Service(),
     }
 
     private fun resumeListening() {
-        if (!isRunning) return
+        if (!isRunning || onlineRecognitionActive) return
 
         try {
             speechService?.setPause(false)
             updateNotification("SIMMY is listening.")
         } catch (_: Exception) {
         }
+    }
+
+    // ONLINE SOUTH AFRICAN ENGLISH RECOGNITION
+
+    private fun startOnlineCommandListening() {
+        if (!isRunning) return
+
+        if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+            onlineRecognitionActive = false
+            awaitingCommand = true
+            speak("Online speech recognition is not available. Please say your command again.")
+            return
+        }
+
+        try {
+            speechService?.setPause(true)
+
+            onlineSpeechRecognizer?.destroy()
+            onlineSpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
+
+            onlineRecognitionActive = true
+            awaitingCommand = false
+            updateNotification("Listening for your command in South African English.")
+
+            onlineSpeechRecognizer?.setRecognitionListener(
+                object : android.speech.RecognitionListener {
+
+                    override fun onReadyForSpeech(params: Bundle?) {
+                        updateNotification("SIMMY is listening to your command.")
+                    }
+
+                    override fun onBeginningOfSpeech() {
+                    }
+
+                    override fun onRmsChanged(rmsdB: Float) {
+                    }
+
+                    override fun onBufferReceived(buffer: ByteArray?) {
+                    }
+
+                    override fun onEndOfSpeech() {
+                        updateNotification("SIMMY is understanding your command.")
+                    }
+
+                    override fun onError(error: Int) {
+                        handler.post {
+                            finishOnlineRecognitionWithFallback(error)
+                        }
+                    }
+
+                    override fun onResults(results: Bundle?) {
+                        handler.post {
+                            val matches = results?.getStringArrayList(
+                                SpeechRecognizer.RESULTS_RECOGNITION
+                            )
+
+                            val command = matches
+                                ?.firstOrNull()
+                                ?.trim()
+                                ?.lowercase(Locale.ROOT)
+
+                            onlineRecognitionActive = false
+                            destroyOnlineRecognizer()
+
+                            if (!command.isNullOrBlank()) {
+                                awaitingCommand = false
+                                updateNotification("SIMMY heard: $command")
+                                executeCommand(normaliseCommand(command))
+                            } else {
+                                awaitingCommand = true
+                                speak("I didn't catch that. Please say your command again.")
+                            }
+                        }
+                    }
+
+                    override fun onPartialResults(partialResults: Bundle?) {
+                    }
+
+                    override fun onEvent(eventType: Int, params: Bundle?) {
+                    }
+                }
+            )
+
+            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                putExtra(
+                    RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                    RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+                )
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE, ONLINE_LANGUAGE)
+                putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, ONLINE_LANGUAGE)
+                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+                putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
+                putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+                putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
+                putExtra(
+                    RecognizerIntent.EXTRA_PROMPT,
+                    "SIMMY is listening. Speak your command."
+                )
+            }
+
+            onlineSpeechRecognizer?.startListening(intent)
+
+        } catch (_: Exception) {
+            onlineRecognitionActive = false
+            destroyOnlineRecognizer()
+            awaitingCommand = true
+            speak("Online recognition could not start. Please say your command again.")
+        }
+    }
+
+    private fun finishOnlineRecognitionWithFallback(error: Int) {
+        if (!onlineRecognitionActive || !isRunning) return
+
+        onlineRecognitionActive = false
+        destroyOnlineRecognizer()
+        awaitingCommand = true
+
+        val reason = when (error) {
+            SpeechRecognizer.ERROR_NETWORK,
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "There is a network problem."
+
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
+                "South African English is not available on the speech service."
+
+            SpeechRecognizer.ERROR_NO_MATCH,
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
+                "I didn't hear a clear command."
+
+            else -> "Online speech recognition is unavailable."
+        }
+
+        updateNotification("Online recognition failed. Using offline listening.")
+        speak("$reason Please say your command again.")
+    }
+
+    private fun destroyOnlineRecognizer() {
+        try {
+            onlineSpeechRecognizer?.cancel()
+            onlineSpeechRecognizer?.destroy()
+        } catch (_: Exception) {
+        }
+
+        onlineSpeechRecognizer = null
+    }
+
+    private fun normaliseCommand(command: String): String {
+        return command.lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .replace("wi fi", "wifi")
+            .replace("you tube", "youtube")
+            .replace("face book", "facebook")
+            .replace("what's app", "whatsapp")
     }
 
     private fun showMessage(message: String) {
@@ -701,7 +878,7 @@ class BackgroundWakeService : Service(),
     }
 
     private fun processVoskResult(json: String?) {
-        if (!isRunning || json.isNullOrBlank()) return
+        if (!isRunning || onlineRecognitionActive || json.isNullOrBlank()) return
 
         val words = try {
             JSONObject(json)
@@ -715,7 +892,7 @@ class BackgroundWakeService : Service(),
         if (words.isBlank()) return
 
         handler.post {
-            if (!isRunning) return@post
+            if (!isRunning || onlineRecognitionActive) return@post
 
             val now = System.currentTimeMillis()
             if (words == lastProcessedText &&
@@ -732,10 +909,7 @@ class BackgroundWakeService : Service(),
     // WAKE WORDS AND DIRECT ACTION PHRASES
 
     private fun processRecognizedWords(words: String) {
-        val normalised = words
-            .replace(Regex("[^a-z0-9 ]"), " ")
-            .replace(Regex("\\s+"), " ")
-            .trim()
+        val normalised = normaliseCommand(words)
 
         if (normalised.isBlank()) return
 
@@ -770,7 +944,8 @@ class BackgroundWakeService : Service(),
                 awaitingCommand = false
                 executeCommand(command)
             } else {
-                awaitingCommand = true
+                awaitingCommand = false
+                startOnlineRecognitionAfterSpeech = true
                 updateNotification("SIMMY is waiting for your command.")
                 speak("Yes, I'm listening.")
             }
@@ -1025,7 +1200,7 @@ class BackgroundWakeService : Service(),
     // VOICE COMMANDS
 
     private fun executeCommand(command: String) {
-        val text = command.lowercase(Locale.ROOT).trim()
+        val text = normaliseCommand(command)
 
         when {
             text.contains("make a note") -> {
@@ -1078,8 +1253,7 @@ class BackgroundWakeService : Service(),
                 openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
             }
 
-            text.contains("wifi") ||
-                text.contains("wi fi") -> {
+            text.contains("wifi") -> {
                 speak("Opening Wi-Fi settings.")
                 openSettings(Settings.ACTION_WIFI_SETTINGS)
             }
@@ -1540,6 +1714,8 @@ class BackgroundWakeService : Service(),
         speaking = false
         ttsReady = false
         listeningStarted = false
+        onlineRecognitionActive = false
+        startOnlineRecognitionAfterSpeech = false
 
         handler.removeCallbacks(overlayPermissionChecker)
 
@@ -1552,6 +1728,8 @@ class BackgroundWakeService : Service(),
         executor.shutdownNow()
 
         try {
+            destroyOnlineRecognizer()
+
             speechService?.cancel()
             speechService?.shutdown()
             speechService = null

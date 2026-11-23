@@ -1,3 +1,4 @@
+
 package com.simmy.assistant
 
 import android.Manifest
@@ -84,6 +85,11 @@ class BackgroundWakeService : Service(),
     private data class LaunchableApp(
         val label: String,
         val packageName: String
+    )
+
+    private data class ContactMatch(
+        val name: String,
+        val number: String
     )
 
     private val handler = Handler(Looper.getMainLooper())
@@ -1677,6 +1683,105 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    // CONTACT LOOKUP HELPERS
+
+    private fun normaliseContactName(name: String): String {
+        return name.lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+    }
+
+    private fun getPhoneContacts(): List<ContactMatch>? {
+        if (checkSelfPermission(Manifest.permission.READ_CONTACTS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            speak("Please allow contacts permission first.")
+            return null
+        }
+
+        val contacts = mutableListOf<ContactMatch>()
+
+        try {
+            val cursor = contentResolver.query(
+                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
+                arrayOf(
+                    ContactsContract.CommonDataKinds.Phone.NUMBER,
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+                ),
+                null,
+                null,
+                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} COLLATE NOCASE ASC"
+            )
+
+            cursor?.use {
+                val numberIndex = it.getColumnIndex(
+                    ContactsContract.CommonDataKinds.Phone.NUMBER
+                )
+                val nameIndex = it.getColumnIndex(
+                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
+                )
+
+                if (numberIndex < 0 || nameIndex < 0) {
+                    return contacts
+                }
+
+                while (it.moveToNext()) {
+                    val number = it.getString(numberIndex)?.trim().orEmpty()
+                    val name = it.getString(nameIndex)?.trim().orEmpty()
+
+                    if (name.isNotBlank() && number.isNotBlank()) {
+                        contacts.add(
+                            ContactMatch(
+                                name = name,
+                                number = number
+                            )
+                        )
+                    }
+                }
+            }
+        } catch (_: Exception) {
+            speak("I couldn't read your contacts.")
+            return null
+        }
+
+        return contacts
+    }
+
+    private fun findContact(name: String): ContactMatch? {
+        val requested = normaliseContactName(name)
+
+        if (requested.isBlank()) return null
+
+        val contacts = getPhoneContacts() ?: return null
+
+        // Prefer a full, exact contact-name match.
+        contacts.firstOrNull {
+            normaliseContactName(it.name) == requested
+        }?.let {
+            return it
+        }
+
+        // Otherwise, choose the closest sensible partial name match.
+        val matchingContacts = contacts.filter {
+            val contactName = normaliseContactName(it.name)
+
+            contactName.isNotBlank() &&
+                (
+                    contactName.contains(requested) ||
+                        requested.contains(contactName)
+                    )
+        }
+
+        return matchingContacts.maxByOrNull {
+            normaliseContactName(it.name).length
+        }
+    }
+
+    private fun findContactNumber(name: String): String? {
+        return findContact(name)?.number
+    }
+
     // WHATSAPP CONTACT CHAT
 
     private fun openWhatsAppContact(name: String) {
@@ -1685,12 +1790,14 @@ class BackgroundWakeService : Service(),
             return
         }
 
-        val number = findContactNumber(name)
+        val contact = findContact(name)
 
-        if (number.isNullOrBlank()) {
+        if (contact == null) {
             speak("I couldn't find that contact.")
             return
         }
+
+        val number = contact.number
 
         try {
             var digits = number.filter { it.isDigit() }
@@ -1730,7 +1837,7 @@ class BackgroundWakeService : Service(),
                 }
             }
 
-            speak("Opening WhatsApp chat for $name.")
+            speak("Opening WhatsApp chat for ${contact.name}.")
 
         } catch (_: Exception) {
             speak("I couldn't open that WhatsApp chat.")
@@ -2156,9 +2263,9 @@ class BackgroundWakeService : Service(),
             return
         }
 
-        val number = findContactNumber(name)
+        val contact = findContact(name)
 
-        if (number.isNullOrBlank()) {
+        if (contact == null) {
             speak("I couldn't find that contact.")
             return
         }
@@ -2166,74 +2273,97 @@ class BackgroundWakeService : Service(),
         try {
             val intent = Intent(
                 Intent.ACTION_DIAL,
-                Uri.parse("tel:$number")
+                Uri.parse("tel:${contact.number}")
             ).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
             startActivity(intent)
-            speak("Opening the phone.")
+            speak("Opening the phone for ${contact.name}.")
         } catch (_: Exception) {
             speak("I couldn't open the phone.")
         }
     }
 
-    private fun findContactNumber(name: String): String? {
-        if (checkSelfPermission(Manifest.permission.READ_CONTACTS)
-            != PackageManager.PERMISSION_GRANTED
-        ) {
-            speak("Please allow contacts permission first.")
-            return null
+    // MATCH A FULL CONTACT NAME AT THE START OF AN SMS REQUEST
+
+    private fun findContactAndMessage(
+        details: String
+    ): Pair<ContactMatch, String>? {
+
+        val contacts = getPhoneContacts() ?: return null
+
+        val spokenWords = details.trim()
+            .split(Regex("\\s+"))
+            .filter { it.isNotBlank() }
+
+        if (spokenWords.isEmpty()) return null
+
+        val matches = mutableListOf<Pair<ContactMatch, String>>()
+
+        for (contact in contacts) {
+            val contactWords = normaliseContactName(contact.name)
+                .split(" ")
+                .filter { it.isNotBlank() }
+
+            if (contactWords.isEmpty() ||
+                contactWords.size > spokenWords.size
+            ) {
+                continue
+            }
+
+            val spokenNameWords = spokenWords
+                .take(contactWords.size)
+                .map { normaliseContactName(it) }
+
+            if (spokenNameWords == contactWords) {
+                val message = spokenWords
+                    .drop(contactWords.size)
+                    .joinToString(" ")
+                    .trim()
+
+                matches.add(contact to message)
+            }
         }
 
-        return try {
-            val cursor = contentResolver.query(
-                ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
-                arrayOf(
-                    ContactsContract.CommonDataKinds.Phone.NUMBER,
-                    ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
-                ),
-                "${ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME} LIKE ?",
-                arrayOf("%$name%"),
-                null
-            )
-
-            cursor?.use {
-                if (it.moveToFirst()) it.getString(0) else null
-            }
-        } catch (_: Exception) {
-            null
+        // Prefer the longest matching contact name.
+        return matches.maxByOrNull {
+            normaliseContactName(it.first.name).length
         }
     }
 
     private fun sendText(details: String) {
-        val parts = details.split(" ", limit = 2)
-
-        if (parts.size < 2) {
+        if (details.isBlank()) {
             speak("Please say the contact name and message.")
             return
         }
 
-        val name = parts[0]
-        val message = parts[1]
-        val number = findContactNumber(name)
+        val match = findContactAndMessage(details)
 
-        if (number.isNullOrBlank()) {
-            speak("I couldn't find that contact.")
+        if (match == null) {
+            speak("I couldn't match the contact name. Please say the full contact name followed by your message.")
+            return
+        }
+
+        val contact = match.first
+        val message = match.second
+
+        if (message.isBlank()) {
+            speak("What message would you like to send to ${contact.name}?")
             return
         }
 
         try {
             val intent = Intent(
                 Intent.ACTION_SENDTO,
-                Uri.parse("smsto:$number")
+                Uri.parse("smsto:${contact.number}")
             ).apply {
                 putExtra("sms_body", message)
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
             startActivity(intent)
-            speak("Opening your messages.")
+            speak("Opening your messages for ${contact.name}. Please review and send your message.")
         } catch (_: Exception) {
             speak("I couldn't open your messages.")
         }

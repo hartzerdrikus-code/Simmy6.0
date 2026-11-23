@@ -42,8 +42,8 @@ import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
-import java.util.zip.ZipInputStream
 import java.util.concurrent.Executors
+import java.util.zip.ZipInputStream
 
 class BackgroundWakeService : Service(),
     RecognitionListener,
@@ -61,6 +61,10 @@ class BackgroundWakeService : Service(),
 
         private const val MODEL_URL =
             "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+
+        private const val NOTES_PACKAGE = "com.samsung.android.app.notes"
+        private const val URECORDER_PACKAGE =
+            "voicerecorder.audiorecorder.voice"
 
         @Volatile
         var isRunning = false
@@ -88,10 +92,14 @@ class BackgroundWakeService : Service(),
 
     private var ttsReady = false
     private var awaitingCommand = false
+    private var awaitingNoteContent = false
     private var listeningStarted = false
     private var readyMessageSpoken = false
     private var speaking = false
     private var timerRunnable: Runnable? = null
+
+    private var lastProcessedText = ""
+    private var lastProcessedTime = 0L
 
     private val overlayPermissionChecker = object : Runnable {
         override fun run() {
@@ -127,24 +135,19 @@ class BackgroundWakeService : Service(),
     ): Int {
 
         when (intent?.action) {
-
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
             }
 
             ACTION_START, null -> {
-
                 if (!isRunning) {
                     try {
                         startForegroundNotification("Starting SIMMY...")
                         isRunning = true
-
                         startOverlayPermissionChecker()
-
                         textToSpeech = TextToSpeech(this, this)
                         loadVoskModel()
-
                     } catch (e: Exception) {
                         showMessage("SIMMY could not start: ${e.message}")
                         stopSelf()
@@ -161,19 +164,15 @@ class BackgroundWakeService : Service(),
     // NOTIFICATIONS
 
     private fun createNotificationChannel() {
-
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-
             val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "SIMMY Background Listening",
                 NotificationManager.IMPORTANCE_LOW
             )
-
             channel.description = "SIMMY voice assistant listening"
             manager.createNotificationChannel(channel)
 
@@ -182,24 +181,19 @@ class BackgroundWakeService : Service(),
                 "SIMMY App Opening",
                 NotificationManager.IMPORTANCE_HIGH
             )
-
-            appChannel.description =
-                "SIMMY app opening and permission notifications"
-
+            appChannel.description = "SIMMY app opening notifications"
             manager.createNotificationChannel(appChannel)
         }
     }
 
     private fun buildNotification(message: String): Notification {
-
         val notificationIntent = Intent(this, MainActivity::class.java)
 
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
             notificationIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or
-                PendingIntent.FLAG_IMMUTABLE
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
         return Notification.Builder(this, CHANNEL_ID)
@@ -212,7 +206,6 @@ class BackgroundWakeService : Service(),
     }
 
     private fun startForegroundNotification(message: String) {
-
         val notification = buildNotification(message)
 
         if (Build.VERSION.SDK_INT >= 34) {
@@ -227,20 +220,16 @@ class BackgroundWakeService : Service(),
     }
 
     private fun updateNotification(message: String) {
-
         if (!isRunning) return
 
         val manager =
-            getSystemService(Context.NOTIFICATION_SERVICE)
-                as NotificationManager
+            getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
         manager.notify(NOTIFICATION_ID, buildNotification(message))
     }
 
     private fun showOverlayPermissionNotification() {
-
         try {
-
             val settingsIntent = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
                 Uri.parse("package:$packageName")
@@ -250,8 +239,7 @@ class BackgroundWakeService : Service(),
                 this,
                 OVERLAY_NOTIFICATION_ID,
                 settingsIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
             val notification = Notification.Builder(
@@ -260,55 +248,32 @@ class BackgroundWakeService : Service(),
             )
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
                 .setContentTitle("Allow SIMMY to open apps")
-                .setContentText(
-                    "Tap here and switch on Allow display over other apps."
-                )
+                .setContentText("Allow display over other apps.")
                 .setContentIntent(settingsPendingIntent)
                 .setAutoCancel(true)
-                .setPriority(Notification.PRIORITY_HIGH)
-                .addAction(
-                    android.R.drawable.ic_menu_view,
-                    "Allow permission",
-                    settingsPendingIntent
-                )
                 .build()
 
             val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             manager.notify(OVERLAY_NOTIFICATION_ID, notification)
-
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             showMessage("Could not open SIMMY permission settings.")
         }
     }
 
-    private fun showAppLaunchNotification(
-        packageName: String,
-        appLabel: String
+    private fun showActionNotification(
+        title: String,
+        message: String,
+        intent: Intent,
+        requestCode: Int
     ) {
-
         try {
-
-            val launchIntent =
-                packageManager.getLaunchIntentForPackage(packageName)
-                    ?: return
-
-            launchIntent.addFlags(
-                Intent.FLAG_ACTIVITY_NEW_TASK or
-                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
-            )
-
-            val requestCode =
-                (packageName.hashCode() and 0x7fffffff) + 3000
-
             val pendingIntent = PendingIntent.getActivity(
                 this,
                 requestCode,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
             val notification = Notification.Builder(
@@ -316,22 +281,41 @@ class BackgroundWakeService : Service(),
                 APP_LAUNCH_CHANNEL_ID
             )
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("SIMMY: Open $appLabel")
-                .setContentText("Tap here to open $appLabel.")
+                .setContentTitle(title)
+                .setContentText(message)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
-                .setPriority(Notification.PRIORITY_HIGH)
                 .build()
 
             val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             manager.notify(requestCode, notification)
-
         } catch (_: Exception) {
-            showMessage("Could not create the app-opening notification.")
+            showMessage("Could not create the notification.")
         }
+    }
+
+    private fun showAppLaunchNotification(
+        packageName: String,
+        appLabel: String
+    ) {
+        val launchIntent =
+            packageManager.getLaunchIntentForPackage(packageName) ?: return
+
+        launchIntent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+        )
+
+        val requestCode = (packageName.hashCode() and 0x7fffffff) + 3000
+
+        showActionNotification(
+            "SIMMY: Open $appLabel",
+            "Tap here to open $appLabel.",
+            launchIntent,
+            requestCode
+        )
     }
 
     // FLOATING SIMMY INDICATOR
@@ -342,17 +326,13 @@ class BackgroundWakeService : Service(),
     }
 
     private fun createSimmyOverlay() {
-
         if (!isRunning || overlayView != null) return
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
             !Settings.canDrawOverlays(this)
-        ) {
-            return
-        }
+        ) return
 
         try {
-
             val bubble = TextView(this).apply {
                 text = "SIMMY • Listening"
                 setTextColor(Color.WHITE)
@@ -378,9 +358,7 @@ class BackgroundWakeService : Service(),
                                 Intent.FLAG_ACTIVITY_NEW_TASK or
                                     Intent.FLAG_ACTIVITY_SINGLE_TOP
                         }
-
                         startActivity(intent)
-
                     } catch (_: Exception) {
                         showMessage("Could not open SIMMY.")
                     }
@@ -410,16 +388,13 @@ class BackgroundWakeService : Service(),
 
             windowManager?.addView(bubble, params)
             overlayView = bubble
-
             overlayPermissionNotificationShown = false
 
             val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
+                getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             manager.cancel(OVERLAY_NOTIFICATION_ID)
-
-            updateNotification("Listening for Hi S...")
+            updateNotification("Listening for Hi, Make a note, or Start recording.")
 
         } catch (e: Exception) {
             showMessage("SIMMY floating indicator failed: ${e.message}")
@@ -427,21 +402,18 @@ class BackgroundWakeService : Service(),
     }
 
     private fun removeSimmyOverlay() {
-
         try {
             overlayView?.let {
                 windowManager?.removeView(it)
             }
         } catch (_: Exception) {
         }
-
         overlayView = null
     }
 
-    // MODEL DOWNLOAD AND EXTRACTION
+    // VOSK MODEL DOWNLOAD
 
     private fun loadVoskModel() {
-
         if (modelLoading) return
 
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
@@ -456,17 +428,12 @@ class BackgroundWakeService : Service(),
         updateNotification("Loading English speech model...")
 
         executor.execute {
-
             try {
-
                 val modelDirectory = File(filesDir, MODEL_NAME)
 
                 if (!isModelValid(modelDirectory)) {
-
                     modelDirectory.deleteRecursively()
-
                     val zipFile = File(cacheDir, "vosk-english.zip")
-
                     downloadModel(zipFile)
                     extractModel(zipFile, filesDir)
                     zipFile.delete()
@@ -479,7 +446,6 @@ class BackgroundWakeService : Service(),
                 val loadedModel = Model(modelDirectory.absolutePath)
 
                 handler.post {
-
                     modelLoading = false
 
                     if (!isRunning) {
@@ -490,9 +456,7 @@ class BackgroundWakeService : Service(),
                     model = loadedModel
                     startVoskListening()
                 }
-
             } catch (e: Exception) {
-
                 handler.post {
                     modelLoading = false
                     showMessage("English model failed: ${e.message}")
@@ -503,7 +467,6 @@ class BackgroundWakeService : Service(),
     }
 
     private fun isModelValid(directory: File): Boolean {
-
         return directory.exists() &&
             File(directory, "am").isDirectory &&
             File(directory, "conf").isDirectory &&
@@ -511,12 +474,10 @@ class BackgroundWakeService : Service(),
     }
 
     private fun downloadModel(destination: File) {
-
         val connection =
             URL(MODEL_URL).openConnection() as HttpURLConnection
 
         try {
-
             connection.connectTimeout = 30000
             connection.readTimeout = 120000
             connection.requestMethod = "GET"
@@ -527,49 +488,37 @@ class BackgroundWakeService : Service(),
             }
 
             BufferedInputStream(connection.inputStream).use { input ->
-
                 FileOutputStream(destination).use { output ->
-
                     val buffer = ByteArray(16384)
 
                     while (true) {
-
                         if (Thread.currentThread().isInterrupted) {
                             throw InterruptedException()
                         }
 
                         val count = input.read(buffer)
-
                         if (count == -1) break
-
                         output.write(buffer, 0, count)
                     }
 
                     output.flush()
                 }
             }
-
         } finally {
             connection.disconnect()
         }
     }
 
-    private fun extractModel(
-        zipFile: File,
-        destination: File
-    ) {
-
+    private fun extractModel(zipFile: File, destination: File) {
         val destinationPath =
             destination.canonicalPath + File.separator
 
         ZipInputStream(
             BufferedInputStream(zipFile.inputStream())
         ).use { zip ->
-
             var entry = zip.nextEntry
 
             while (entry != null) {
-
                 if (Thread.currentThread().isInterrupted) {
                     throw InterruptedException()
                 }
@@ -582,25 +531,18 @@ class BackgroundWakeService : Service(),
                 }
 
                 if (entry.isDirectory) {
-
                     outputFile.mkdirs()
-
                 } else {
-
                     outputFile.parentFile?.mkdirs()
 
                     BufferedOutputStream(
                         FileOutputStream(outputFile)
                     ).use { output ->
-
                         val buffer = ByteArray(16384)
 
                         while (true) {
-
                             val count = zip.read(buffer)
-
                             if (count == -1) break
-
                             output.write(buffer, 0, count)
                         }
 
@@ -617,26 +559,18 @@ class BackgroundWakeService : Service(),
     // VOSK LISTENING
 
     private fun startVoskListening() {
-
         if (!isRunning) return
 
         try {
-
             val loadedModel = model ?: return
 
             recognizer = Recognizer(loadedModel, 16000.0f)
-
-            speechService = SpeechService(
-                recognizer,
-                16000.0f
-            )
-
+            speechService = SpeechService(recognizer, 16000.0f)
             speechService?.startListening(this)
 
             listeningStarted = true
-            updateNotification("Listening for Hi S...")
+            updateNotification("Listening for Hi, Make a note, or Start recording.")
             announceReady()
-
         } catch (e: Exception) {
             showMessage("SIMMY listening error: ${e.message}")
             stopSelf()
@@ -644,7 +578,6 @@ class BackgroundWakeService : Service(),
     }
 
     private fun announceReady() {
-
         if (!isRunning ||
             !ttsReady ||
             !listeningStarted ||
@@ -652,26 +585,22 @@ class BackgroundWakeService : Service(),
         ) return
 
         readyMessageSpoken = true
-        speak("SIMMY is ready. Say Hi S.")
+        speak("SIMMY is ready. Say Hi, Make a note, or Start recording.")
     }
 
     // TEXT TO SPEECH
 
     override fun onInit(status: Int) {
-
         if (status == TextToSpeech.SUCCESS) {
-
             val result = textToSpeech?.setLanguage(Locale.US)
 
             if (result != TextToSpeech.LANG_MISSING_DATA &&
                 result != TextToSpeech.LANG_NOT_SUPPORTED
             ) {
-
                 ttsReady = true
 
                 textToSpeech?.setOnUtteranceProgressListener(
                     object : UtteranceProgressListener() {
-
                         override fun onStart(utteranceId: String?) {
                             speaking = true
                         }
@@ -693,18 +622,15 @@ class BackgroundWakeService : Service(),
                 )
 
                 announceReady()
-
             } else {
                 showMessage("English voice data is unavailable.")
             }
-
         } else {
             showMessage("SIMMY voice is unavailable.")
         }
     }
 
     private fun speak(message: String) {
-
         if (!isRunning) return
 
         if (!ttsReady || textToSpeech == null) {
@@ -728,18 +654,16 @@ class BackgroundWakeService : Service(),
     }
 
     private fun resumeListening() {
-
         if (!isRunning) return
 
         try {
             speechService?.setPause(false)
-            updateNotification("Listening for Hi S...")
+            updateNotification("Listening for Hi, Make a note, or Start recording.")
         } catch (_: Exception) {
         }
     }
 
     private fun showMessage(message: String) {
-
         handler.post {
             Toast.makeText(
                 applicationContext,
@@ -772,7 +696,6 @@ class BackgroundWakeService : Service(),
     }
 
     private fun processVoskResult(json: String?) {
-
         if (!isRunning || json.isNullOrBlank()) return
 
         val words = try {
@@ -787,50 +710,59 @@ class BackgroundWakeService : Service(),
         if (words.isBlank()) return
 
         handler.post {
-
             if (!isRunning) return@post
 
-            updateNotification("I heard: $words")
-            showMessage("SIMMY heard: $words")
+            // Ignore duplicate callbacks for the same spoken phrase.
+            val now = System.currentTimeMillis()
+            if (words == lastProcessedText &&
+                now - lastProcessedTime < 1800
+            ) return@post
+
+            lastProcessedText = words
+            lastProcessedTime = now
 
             processRecognizedWords(words)
         }
     }
 
-    // WAKE WORD DETECTION
+    // WAKE WORDS AND DIRECT ACTION PHRASES
 
     private fun processRecognizedWords(words: String) {
-
         val normalised = words
             .replace(Regex("[^a-z0-9 ]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
 
-        val wakeWords = listOf(
-            "i s",
-            "eye s",
-            "hi s",
-            "hi see",
-            "high sea",
-            "hey see",
-            "hello s",
-            "hi ess",
-            "high s",
-            "hey s",
-            "hi c",
-            "i see",
-            "i c",
-            "ice"
-        )
+        if (normalised.isBlank()) return
 
-        val wakeWord = wakeWords.firstOrNull {
-            normalised.contains(it)
+        updateNotification("SIMMY heard: $normalised")
+
+        // When SIMMY is collecting note text, the next phrase is the note.
+        if (awaitingNoteContent) {
+            awaitingNoteContent = false
+            saveNoteInSamsungNotes(normalised)
+            return
         }
 
-        if (wakeWord != null) {
+        // These two phrases work directly, without saying Hi first.
+        if (normalised == "make a note" ||
+            normalised.startsWith("make a note ")
+        ) {
+            startMakingNote()
+            return
+        }
 
+        if (normalised == "start recording" ||
+            normalised.startsWith("start recording ")
+        ) {
+            startVoiceRecording()
+            return
+        }
+
+        // "Hi" is now the only normal wake word.
+        if (normalised == "hi" || normalised.startsWith("hi ")) {
             val command = normalised
-                .substringAfter(wakeWord)
+                .removePrefix("hi")
                 .trim()
 
             if (command.isNotBlank()) {
@@ -851,16 +783,113 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    // NOTES
+
+    private fun startMakingNote() {
+        awaitingCommand = false
+        awaitingNoteContent = true
+        updateNotification("SIMMY is listening for your note.")
+        speak("What would you like me to write?")
+    }
+
+    private fun saveNoteInSamsungNotes(noteText: String) {
+        if (noteText.isBlank()) {
+            speak("I didn't hear your note. Please try again.")
+            return
+        }
+
+        try {
+            val noteIntent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                setPackage(NOTES_PACKAGE)
+                putExtra(Intent.EXTRA_SUBJECT, "SIMMY note")
+                putExtra(Intent.EXTRA_TEXT, noteText)
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+
+            val overlayAllowed =
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                    Settings.canDrawOverlays(this)
+
+            if (overlayAllowed && overlayView != null) {
+                startActivity(noteIntent)
+                speak("I've sent your note to Samsung Notes. Please save it there.")
+            } else {
+                showActionNotification(
+                    "SIMMY: Save your note",
+                    "Tap here to send your note to Samsung Notes.",
+                    noteIntent,
+                    8101
+                )
+                speak("Your note is ready. Tap the notification to open Samsung Notes.")
+            }
+        } catch (_: Exception) {
+            speak("I couldn't send the note to Samsung Notes. Please check that Samsung Notes is installed.")
+        }
+    }
+
+    // VOICE RECORDER
+
+    private fun startVoiceRecording() {
+        awaitingCommand = false
+
+        val launchIntent =
+            packageManager.getLaunchIntentForPackage(URECORDER_PACKAGE)
+
+        if (launchIntent == null) {
+            speak("I couldn't find your Voice Recorder app.")
+            showMessage("Check that URecorder is installed.")
+            return
+        }
+
+        launchIntent.addFlags(
+            Intent.FLAG_ACTIVITY_NEW_TASK or
+                Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+        )
+
+        val overlayAllowed =
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                Settings.canDrawOverlays(this)
+
+        try {
+            if (overlayAllowed && overlayView != null) {
+                startActivity(launchIntent)
+                speak("Opening Voice Recorder. Tap Record if recording doesn't start automatically.")
+            } else {
+                showActionNotification(
+                    "SIMMY: Open Voice Recorder",
+                    "Tap here to open URecorder.",
+                    launchIntent,
+                    8102
+                )
+                speak("Voice Recorder is ready. Tap the notification to open it.")
+            }
+        } catch (_: Exception) {
+            showActionNotification(
+                "SIMMY: Open Voice Recorder",
+                "Tap here to open URecorder.",
+                launchIntent,
+                8102
+            )
+            speak("Please tap the notification to open Voice Recorder.")
+        }
+    }
+
     // VOICE COMMANDS
 
     private fun executeCommand(command: String) {
-
-        val text = command.lowercase(Locale.ROOT)
+        val text = command.lowercase(Locale.ROOT).trim()
 
         when {
+            text.contains("make a note") -> {
+                startMakingNote()
+            }
+
+            text.contains("start recording") -> {
+                startVoiceRecording()
+            }
 
             text.contains("time") -> {
-
                 val time = SimpleDateFormat(
                     "h:mm a",
                     Locale.getDefault()
@@ -871,7 +900,6 @@ class BackgroundWakeService : Service(),
 
             text.contains("date") ||
                 text.contains("today") -> {
-
                 val date = SimpleDateFormat(
                     "EEEE, d MMMM yyyy",
                     Locale.getDefault()
@@ -882,7 +910,6 @@ class BackgroundWakeService : Service(),
 
             text.contains("read messages") ||
                 text.contains("my messages") -> {
-
                 val message = MessageNotificationService.latestMessage
 
                 if (message.isNullOrBlank()) {
@@ -916,7 +943,6 @@ class BackgroundWakeService : Service(),
 
             text.startsWith("call ") ||
                 text.startsWith("phone ") -> {
-
                 val name = text
                     .removePrefix("call ")
                     .removePrefix("phone ")
@@ -927,7 +953,6 @@ class BackgroundWakeService : Service(),
 
             text.startsWith("text ") ||
                 text.startsWith("send sms ") -> {
-
                 val details = text
                     .removePrefix("send sms ")
                     .removePrefix("text ")
@@ -947,9 +972,7 @@ class BackgroundWakeService : Service(),
             text.contains("stop listening") ||
                 text.contains("goodbye") ||
                 text.contains("go to sleep") -> {
-
                 speak("Goodbye.")
-
                 handler.postDelayed({
                     stopSelf()
                 }, 2000)
@@ -961,8 +984,9 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    private fun startTimer(command: String) {
+    // TIMER
 
+    private fun startTimer(command: String) {
         val number = Regex("\\d+")
             .find(command)
             ?.value
@@ -994,7 +1018,6 @@ class BackgroundWakeService : Service(),
     // CONTACTS AND CALLING
 
     private fun makeCall(name: String) {
-
         if (name.isBlank()) {
             speak("Please say the contact name.")
             return
@@ -1008,7 +1031,6 @@ class BackgroundWakeService : Service(),
         }
 
         try {
-
             val intent = Intent(
                 Intent.ACTION_DIAL,
                 Uri.parse("tel:$number")
@@ -1018,14 +1040,12 @@ class BackgroundWakeService : Service(),
 
             startActivity(intent)
             speak("Opening the phone.")
-
         } catch (_: Exception) {
             speak("I couldn't open the phone.")
         }
     }
 
     private fun findContactNumber(name: String): String? {
-
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS)
             != PackageManager.PERMISSION_GRANTED
         ) {
@@ -1034,7 +1054,6 @@ class BackgroundWakeService : Service(),
         }
 
         return try {
-
             val cursor = contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 arrayOf(
@@ -1049,14 +1068,12 @@ class BackgroundWakeService : Service(),
             cursor?.use {
                 if (it.moveToFirst()) it.getString(0) else null
             }
-
         } catch (_: Exception) {
             null
         }
     }
 
     private fun sendText(details: String) {
-
         val parts = details.split(" ", limit = 2)
 
         if (parts.size < 2) {
@@ -1066,7 +1083,6 @@ class BackgroundWakeService : Service(),
 
         val name = parts[0]
         val message = parts[1]
-
         val number = findContactNumber(name)
 
         if (number.isNullOrBlank()) {
@@ -1075,7 +1091,6 @@ class BackgroundWakeService : Service(),
         }
 
         try {
-
             val intent = Intent(
                 Intent.ACTION_SENDTO,
                 Uri.parse("smsto:$number")
@@ -1086,7 +1101,6 @@ class BackgroundWakeService : Service(),
 
             startActivity(intent)
             speak("Opening your messages.")
-
         } catch (_: Exception) {
             speak("I couldn't open your messages.")
         }
@@ -1095,15 +1109,12 @@ class BackgroundWakeService : Service(),
     // SETTINGS
 
     private fun openSettings(action: String) {
-
         try {
-
             val intent = Intent(action).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
             startActivity(intent)
-
         } catch (_: Exception) {
             speak("I couldn't open those settings.")
         }
@@ -1112,13 +1123,11 @@ class BackgroundWakeService : Service(),
     // APP SEARCH
 
     private fun normaliseAppName(name: String): String {
-        return name
-            .lowercase(Locale.ROOT)
+        return name.lowercase(Locale.ROOT)
             .replace(Regex("[^a-z0-9]"), "")
     }
 
     private fun cleanRequestedAppName(name: String): String {
-
         return name.lowercase(Locale.ROOT)
             .replace(Regex("[^a-z0-9 ]"), " ")
             .replace(Regex("\\s+"), " ")
@@ -1131,7 +1140,6 @@ class BackgroundWakeService : Service(),
     }
 
     private fun knownAppPackages(): Map<String, String> {
-
         return mapOf(
             "youtube" to "com.google.android.youtube",
             "youtube music" to "com.google.android.apps.youtube.music",
@@ -1158,8 +1166,10 @@ class BackgroundWakeService : Service(),
             "twitter" to "com.twitter.android",
             "samsung internet" to "com.sec.android.app.sbrowser",
             "internet" to "com.sec.android.app.sbrowser",
-            "samsung notes" to "com.samsung.android.app.notes",
-            "notes" to "com.samsung.android.app.notes",
+            "samsung notes" to NOTES_PACKAGE,
+            "notes" to NOTES_PACKAGE,
+            "voice recorder" to URECORDER_PACKAGE,
+            "urecorder" to URECORDER_PACKAGE,
             "calculator" to "com.sec.android.app.popupcalculator",
             "clock" to "com.sec.android.app.clockpackage",
             "gallery" to "com.sec.android.gallery3d",
@@ -1173,11 +1183,9 @@ class BackgroundWakeService : Service(),
     }
 
     private fun getLaunchableApps(): List<LaunchableApp> {
-
         val apps = mutableListOf<LaunchableApp>()
 
         try {
-
             val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
                 addCategory(Intent.CATEGORY_LAUNCHER)
             }
@@ -1186,7 +1194,6 @@ class BackgroundWakeService : Service(),
                 packageManager.queryIntentActivities(launcherIntent, 0)
 
             for (resolveInfo in activities) {
-
                 val activityInfo = resolveInfo.activityInfo ?: continue
                 val packageName = activityInfo.packageName
 
@@ -1199,15 +1206,9 @@ class BackgroundWakeService : Service(),
                 if (label.isNotBlank() &&
                     apps.none { it.packageName == packageName }
                 ) {
-                    apps.add(
-                        LaunchableApp(
-                            label = label,
-                            packageName = packageName
-                        )
-                    )
+                    apps.add(LaunchableApp(label, packageName))
                 }
             }
-
         } catch (e: Exception) {
             showMessage("Could not search installed apps: ${e.message}")
         }
@@ -1216,18 +1217,15 @@ class BackgroundWakeService : Service(),
     }
 
     private fun findLaunchableApp(requestedName: String): LaunchableApp? {
-
         val requested = cleanRequestedAppName(requestedName)
         val requestedNormal = normaliseAppName(requested)
 
         if (requestedNormal.isBlank()) return null
 
         val apps = getLaunchableApps()
-
         val knownPackage = knownAppPackages()[requested]
 
         if (knownPackage != null) {
-
             apps.firstOrNull {
                 it.packageName == knownPackage
             }?.let {
@@ -1240,59 +1238,42 @@ class BackgroundWakeService : Service(),
                     0
                 )
 
-                val launchIntent =
-                    packageManager.getLaunchIntentForPackage(knownPackage)
-
-                if (launchIntent != null) {
+                if (packageManager.getLaunchIntentForPackage(knownPackage) != null) {
                     return LaunchableApp(
-                        label = packageManager
-                            .getApplicationLabel(appInfo)
-                            .toString(),
-                        packageName = knownPackage
+                        packageManager.getApplicationLabel(appInfo).toString(),
+                        knownPackage
                     )
                 }
-
             } catch (_: Exception) {
-                // Continue searching installed launcher apps.
+                // Continue searching installed apps.
             }
         }
 
         apps.firstOrNull {
             normaliseAppName(it.label) == requestedNormal
-        }?.let {
-            return it
-        }
+        }?.let { return it }
 
         apps.firstOrNull {
             normaliseAppName(it.packageName) == requestedNormal
-        }?.let {
-            return it
-        }
+        }?.let { return it }
 
         apps.firstOrNull {
             normaliseAppName(it.label).startsWith(requestedNormal)
-        }?.let {
-            return it
-        }
+        }?.let { return it }
 
         apps.firstOrNull {
             normaliseAppName(it.label).contains(requestedNormal)
-        }?.let {
-            return it
-        }
+        }?.let { return it }
 
         apps.firstOrNull {
             requestedNormal.contains(normaliseAppName(it.label)) &&
                 normaliseAppName(it.label).length >= 4
-        }?.let {
-            return it
-        }
+        }?.let { return it }
 
         return null
     }
 
     private fun openNamedApp(name: String) {
-
         val cleanedName = cleanRequestedAppName(name)
 
         if (cleanedName.isBlank()) {
@@ -1318,9 +1299,7 @@ class BackgroundWakeService : Service(),
         packageName: String,
         appLabel: String
     ) {
-
         try {
-
             val launchIntent =
                 packageManager.getLaunchIntentForPackage(packageName)
 
@@ -1343,7 +1322,7 @@ class BackgroundWakeService : Service(),
                     startActivity(launchIntent)
                     return
                 } catch (_: Exception) {
-                    // Use the notification fallback below.
+                    // Use notification fallback.
                 }
             }
 
@@ -1355,8 +1334,7 @@ class BackgroundWakeService : Service(),
             } else {
                 speak("Please tap the notification to open $appLabel.")
             }
-
-        } catch (e: Exception) {
+        } catch (_: Exception) {
             speak("I couldn't open $appLabel.")
             showAppLaunchNotification(packageName, appLabel)
         }
@@ -1365,9 +1343,9 @@ class BackgroundWakeService : Service(),
     // CLEANUP
 
     override fun onDestroy() {
-
         isRunning = false
         awaitingCommand = false
+        awaitingNoteContent = false
         modelLoading = false
         speaking = false
         ttsReady = false
@@ -1380,12 +1358,10 @@ class BackgroundWakeService : Service(),
         }
 
         removeSimmyOverlay()
-
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
 
         try {
-
             speechService?.cancel()
             speechService?.shutdown()
             speechService = null
@@ -1399,7 +1375,6 @@ class BackgroundWakeService : Service(),
 
             model?.close()
             model = null
-
         } catch (_: Exception) {
         }
 

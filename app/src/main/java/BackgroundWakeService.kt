@@ -1,3 +1,4 @@
+
 package com.simmy.assistant
 
 import android.Manifest
@@ -34,7 +35,7 @@ import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
 import android.view.Gravity
 import android.view.WindowManager
-import android.widget.TextView
+import android.widget.ImageView
 import android.widget.Toast
 import org.json.JSONObject
 import org.vosk.Model
@@ -98,7 +99,7 @@ class BackgroundWakeService : Service(),
     private var startOnlineRecognitionAfterSpeech = false
 
     private var windowManager: WindowManager? = null
-    private var overlayView: TextView? = null
+    private var overlayView: ImageView? = null
     private var overlayPermissionNotificationShown = false
 
     private var wakeLock: PowerManager.WakeLock? = null
@@ -374,7 +375,7 @@ class BackgroundWakeService : Service(),
         )
     }
 
-    // FLOATING SIMMY INDICATOR
+    // FLOATING SIMMY LOGO BUBBLE
 
     private fun startOverlayPermissionChecker() {
         handler.removeCallbacks(overlayPermissionChecker)
@@ -389,20 +390,29 @@ class BackgroundWakeService : Service(),
         ) return
 
         try {
-            val bubble = TextView(this).apply {
-                text = "SIMMY • Listening"
-                setTextColor(Color.WHITE)
-                textSize = 12f
-                gravity = Gravity.CENTER
-                setPadding(18, 12, 18, 12)
+            val density = resources.displayMetrics.density
+            val bubbleSize = (76 * density).toInt()
+            val borderWidth = (3 * density).toInt()
 
-                background = GradientDrawable().apply {
-                    setColor(Color.rgb(35, 65, 115))
-                    cornerRadius = 40f
-                    setStroke(2, Color.WHITE)
-                }
+            val bubbleBackground = GradientDrawable().apply {
+                shape = GradientDrawable.OVAL
+                setColor(Color.rgb(15, 20, 45))
+                setStroke(
+                    borderWidth,
+                    Color.rgb(0, 220, 255)
+                )
+            }
 
-                elevation = 8f
+            val appIcon = packageManager.getApplicationIcon(packageName)
+
+            val bubble = ImageView(this).apply {
+                setImageDrawable(appIcon)
+                scaleType = ImageView.ScaleType.CENTER_CROP
+                background = bubbleBackground
+                clipToOutline = true
+                setPadding(0, 0, 0, 0)
+                elevation = 12f
+                contentDescription = "SIMMY floating assistant"
 
                 setOnClickListener {
                     try {
@@ -430,8 +440,8 @@ class BackgroundWakeService : Service(),
                 }
 
             val params = WindowManager.LayoutParams(
-                WindowManager.LayoutParams.WRAP_CONTENT,
-                WindowManager.LayoutParams.WRAP_CONTENT,
+                bubbleSize,
+                bubbleSize,
                 overlayType,
                 WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                     WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
@@ -450,6 +460,7 @@ class BackgroundWakeService : Service(),
                 getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             manager.cancel(OVERLAY_NOTIFICATION_ID)
+
             updateNotification(
                 "Listening for Mamma, Hi, Simon, Make a note, or Start recording."
             )
@@ -995,7 +1006,6 @@ class BackgroundWakeService : Service(),
             .replace("what s app", "whatsapp")
             .replace("blue tooth", "bluetooth")
 
-        // Remove repeated polite introductions without changing the command itself.
         val prefixes = listOf(
             "can you please ", "could you please ", "would you please ",
             "will you please ", "please can you ", "please could you ",
@@ -1015,7 +1025,6 @@ class BackgroundWakeService : Service(),
             }
         } while (removedPrefix)
 
-        // Common Afrikaans phrases.
         val translations = listOf(
             "hoe laat is dit nou" to "what time is it",
             "hoe laat is dit" to "what time is it",
@@ -1096,7 +1105,6 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        // General Afrikaans app-opening patterns.
         text = text
             .replace("maak asseblief ", "maak ")
             .replace("maak vir my ", "maak ")
@@ -1112,7 +1120,6 @@ class BackgroundWakeService : Service(),
             text = "open ${it.groupValues[1]}"
         }
 
-        // Afrikaans call requests: only translate the first word.
         if (text.startsWith("bel ")) {
             text = "call " + text.removePrefix("bel ").trim()
         } else if (text.startsWith("skakel ")) {
@@ -1126,7 +1133,6 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        // Common English variations.
         val englishMappings = listOf(
             "tell me the time" to "what time is it",
             "whats the time" to "what time is it",
@@ -1148,7 +1154,6 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        // Natural variations such as "open the YouTube app".
         text = text
             .replace(Regex("^open the "), "open ")
             .replace(Regex("^open my "), "open ")
@@ -1766,7 +1771,6 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        // Also accept a simple number followed by "timer" as minutes.
         if (!foundDuration) {
             val simpleNumber = Regex("\\b\\d+\\b")
                 .find(command)?.value?.toLongOrNull()

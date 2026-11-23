@@ -59,7 +59,6 @@ class BackgroundWakeService : Service(),
     }
 
     private val handler = Handler(Looper.getMainLooper())
-
     private val executor = Executors.newSingleThreadExecutor()
 
     private var model: Model? = null
@@ -74,7 +73,6 @@ class BackgroundWakeService : Service(),
     private var awaitingCommand = false
     private var listeningStarted = false
     private var readyMessageSpoken = false
-
     private var timerRunnable: Runnable? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -100,9 +98,8 @@ class BackgroundWakeService : Service(),
             ACTION_START, null -> {
 
                 if (!isRunning) {
-
                     try {
-                        startForegroundNotification()
+                        startForegroundNotification("Starting SIMMY...")
 
                         isRunning = true
 
@@ -111,11 +108,7 @@ class BackgroundWakeService : Service(),
                         loadVoskModel()
 
                     } catch (e: Exception) {
-
-                        showMessage(
-                            "SIMMY could not start: ${e.message}"
-                        )
-
+                        showMessage("SIMMY could not start: ${e.message}")
                         stopSelf()
                     }
                 }
@@ -135,8 +128,7 @@ class BackgroundWakeService : Service(),
                 NotificationManager.IMPORTANCE_LOW
             )
 
-            channel.description =
-                "SIMMY voice assistant listening"
+            channel.description = "SIMMY voice assistant listening"
 
             val manager =
                 getSystemService(Context.NOTIFICATION_SERVICE)
@@ -146,10 +138,9 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    private fun startForegroundNotification() {
+    private fun buildNotification(message: String): Notification {
 
-        val notificationIntent =
-            Intent(this, MainActivity::class.java)
+        val notificationIntent = Intent(this, MainActivity::class.java)
 
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -159,16 +150,18 @@ class BackgroundWakeService : Service(),
                 PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = Notification.Builder(
-            this,
-            CHANNEL_ID
-        )
+        return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("SIMMY is active")
-            .setContentText("Say Hi S to talk to SIMMY")
+            .setContentText(message)
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .build()
+    }
+
+    private fun startForegroundNotification(message: String) {
+
+        val notification = buildNotification(message)
 
         if (Build.VERSION.SDK_INT >= 34) {
 
@@ -180,11 +173,22 @@ class BackgroundWakeService : Service(),
 
         } else {
 
-            startForeground(
-                NOTIFICATION_ID,
-                notification
-            )
+            startForeground(NOTIFICATION_ID, notification)
         }
+    }
+
+    private fun updateNotification(message: String) {
+
+        if (!isRunning) return
+
+        val manager =
+            getSystemService(Context.NOTIFICATION_SERVICE)
+                as NotificationManager
+
+        manager.notify(
+            NOTIFICATION_ID,
+            buildNotification(message)
+        )
     }
 
     // DOWNLOAD AND EXTRACT THE ENGLISH MODEL
@@ -202,6 +206,7 @@ class BackgroundWakeService : Service(),
         }
 
         modelLoading = true
+        updateNotification("Loading English speech model...")
 
         executor.execute {
 
@@ -216,20 +221,16 @@ class BackgroundWakeService : Service(),
                     val zipFile = File(cacheDir, "vosk-english.zip")
 
                     downloadModel(zipFile)
-
                     extractModel(zipFile, filesDir)
 
                     zipFile.delete()
                 }
 
                 if (!isModelValid(modelDirectory)) {
-                    throw Exception(
-                        "English model files are incomplete."
-                    )
+                    throw Exception("English model files are incomplete.")
                 }
 
-                val loadedModel =
-                    Model(modelDirectory.absolutePath)
+                val loadedModel = Model(modelDirectory.absolutePath)
 
                 handler.post {
 
@@ -241,7 +242,6 @@ class BackgroundWakeService : Service(),
                     }
 
                     model = loadedModel
-
                     startVoskListening()
                 }
 
@@ -251,10 +251,7 @@ class BackgroundWakeService : Service(),
 
                     modelLoading = false
 
-                    showMessage(
-                        "English model failed: ${e.message}"
-                    )
-
+                    showMessage("English model failed: ${e.message}")
                     stopSelf()
                 }
             }
@@ -281,12 +278,8 @@ class BackgroundWakeService : Service(),
             connection.requestMethod = "GET"
             connection.connect()
 
-            if (connection.responseCode !=
-                HttpURLConnection.HTTP_OK
-            ) {
-                throw Exception(
-                    "Download failed. HTTP ${connection.responseCode}"
-                )
+            if (connection.responseCode != HttpURLConnection.HTTP_OK) {
+                throw Exception("Download failed. HTTP ${connection.responseCode}")
             }
 
             BufferedInputStream(connection.inputStream).use { input ->
@@ -337,9 +330,7 @@ class BackgroundWakeService : Service(),
                     throw InterruptedException()
                 }
 
-                val outputFile =
-                    File(destination, entry.name)
-
+                val outputFile = File(destination, entry.name)
                 val outputPath = outputFile.canonicalPath
 
                 if (!outputPath.startsWith(destinationPath)) {
@@ -389,10 +380,7 @@ class BackgroundWakeService : Service(),
 
             val loadedModel = model ?: return
 
-            recognizer = Recognizer(
-                loadedModel,
-                16000.0f
-            )
+            recognizer = Recognizer(loadedModel, 16000.0f)
 
             speechService = SpeechService(
                 recognizer,
@@ -403,14 +391,12 @@ class BackgroundWakeService : Service(),
 
             listeningStarted = true
 
+            updateNotification("Listening for Hi S...")
             announceReady()
 
         } catch (e: Exception) {
 
-            showMessage(
-                "SIMMY listening error: ${e.message}"
-            )
-
+            showMessage("SIMMY listening error: ${e.message}")
             stopSelf()
         }
     }
@@ -426,7 +412,6 @@ class BackgroundWakeService : Service(),
         }
 
         readyMessageSpoken = true
-
         speak("SIMMY is ready. Say Hi S.")
     }
 
@@ -436,8 +421,7 @@ class BackgroundWakeService : Service(),
 
         if (status == TextToSpeech.SUCCESS) {
 
-            val result =
-                textToSpeech?.setLanguage(Locale.US)
+            val result = textToSpeech?.setLanguage(Locale.US)
 
             if (result != TextToSpeech.LANG_MISSING_DATA &&
                 result != TextToSpeech.LANG_NOT_SUPPORTED
@@ -451,14 +435,12 @@ class BackgroundWakeService : Service(),
                         override fun onStart(utteranceId: String?) {}
 
                         override fun onDone(utteranceId: String?) {
-
                             handler.post {
                                 resumeListening()
                             }
                         }
 
                         override fun onError(utteranceId: String?) {
-
                             handler.post {
                                 resumeListening()
                             }
@@ -467,10 +449,12 @@ class BackgroundWakeService : Service(),
                 )
 
                 announceReady()
+
+            } else {
+                showMessage("English voice data is unavailable.")
             }
 
         } else {
-
             showMessage("SIMMY voice is unavailable.")
         }
     }
@@ -495,6 +479,7 @@ class BackgroundWakeService : Service(),
 
         try {
             speechService?.setPause(false)
+            updateNotification("Listening for Hi S...")
         } catch (_: Exception) {
         }
     }
@@ -514,7 +499,6 @@ class BackgroundWakeService : Service(),
     // VOSK RECOGNITION CALLBACKS
 
     override fun onResult(hypothesis: String?) {
-
         processVoskResult(hypothesis)
     }
 
@@ -523,18 +507,17 @@ class BackgroundWakeService : Service(),
     }
 
     override fun onFinalResult(hypothesis: String?) {
-        // Continuous listening normally uses onResult.
+        processVoskResult(hypothesis)
     }
 
     override fun onError(exception: Exception?) {
 
-        showMessage(
-            "SIMMY microphone error: ${exception?.message}"
-        )
+        showMessage("SIMMY microphone error: ${exception?.message}")
+        updateNotification("Microphone error. Check permissions.")
     }
 
     override fun onTimeout() {
-        // Continuous listening has no timeout.
+        // Continuous listening.
     }
 
     private fun processVoskResult(json: String?) {
@@ -549,27 +532,40 @@ class BackgroundWakeService : Service(),
                 .lowercase(Locale.ROOT)
 
         } catch (_: Exception) {
-
             ""
         }
 
         if (words.isBlank()) return
 
-        processRecognizedWords(words)
+        handler.post {
+
+            if (!isRunning) return@post
+
+            // SHOW WHAT SIMMY HEARD
+            updateNotification("I heard: $words")
+            showMessage("SIMMY heard: $words")
+
+            processRecognizedWords(words)
+        }
     }
 
-    // WAKE WORD
+    // WAKE WORD DETECTION
 
     private fun processRecognizedWords(words: String) {
 
         val wakeWords = listOf(
-            "hi s",
             "hi see",
-            "hi c",
-            "hi ess",
-            "hey s",
+            "high sea",
+            "hey see",
             "hello s",
-            "high s"
+            "hi ess",
+            "high s",
+            "hey s",
+            "hi c",
+            "i see",
+            "i c",
+            "ice",
+            "hi s"
         )
 
         val wakeWord = wakeWords.firstOrNull {
@@ -578,8 +574,7 @@ class BackgroundWakeService : Service(),
 
         if (wakeWord != null) {
 
-            val command =
-                words.substringAfter(wakeWord).trim()
+            val command = words.substringAfter(wakeWord).trim()
 
             if (command.isNotBlank()) {
 
@@ -589,6 +584,7 @@ class BackgroundWakeService : Service(),
             } else {
 
                 awaitingCommand = true
+                updateNotification("SIMMY is waiting for your command.")
                 speak("Yes, I'm listening.")
             }
 
@@ -634,8 +630,7 @@ class BackgroundWakeService : Service(),
             text.contains("read messages") ||
                 text.contains("my messages") -> {
 
-                val message =
-                    MessageNotificationService.latestMessage
+                val message = MessageNotificationService.latestMessage
 
                 if (message.isNullOrBlank()) {
                     speak("I don't have any new messages.")
@@ -647,37 +642,28 @@ class BackgroundWakeService : Service(),
             text.contains("bluetooth") -> {
 
                 speak("Opening Bluetooth settings.")
-
-                openSettings(
-                    Settings.ACTION_BLUETOOTH_SETTINGS
-                )
+                openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
             }
 
             text.contains("settings") -> {
 
                 speak("Opening settings.")
-
-                openSettings(
-                    Settings.ACTION_SETTINGS
-                )
+                openSettings(Settings.ACTION_SETTINGS)
             }
 
             text.contains("camera") -> {
 
                 speak("Opening camera.")
-
                 openApp("com.sec.android.app.camera")
             }
 
             text.contains("youtube") -> {
 
                 speak("Opening YouTube.")
-
                 openApp("com.google.android.youtube")
             }
 
             text.contains("timer") -> {
-
                 startTimer(text)
             }
 
@@ -706,15 +692,12 @@ class BackgroundWakeService : Service(),
             text.contains("whatsapp") -> {
 
                 speak("Opening WhatsApp.")
-
                 openApp("com.whatsapp")
             }
 
             text.startsWith("open ") -> {
 
-                openNamedApp(
-                    text.removePrefix("open ").trim()
-                )
+                openNamedApp(text.removePrefix("open ").trim())
             }
 
             text.contains("stop listening") ||
@@ -729,10 +712,7 @@ class BackgroundWakeService : Service(),
             }
 
             else -> {
-
-                speak(
-                    "Sorry, I don't understand that command yet."
-                )
+                speak("Sorry, I don't understand that command yet.")
             }
         }
     }
@@ -745,18 +725,13 @@ class BackgroundWakeService : Service(),
             ?.toLongOrNull()
 
         if (number == null || number <= 0) {
-
             speak("Please tell me how many minutes.")
-
             return
         }
 
         val seconds = when {
-
             command.contains("second") -> number
-
             command.contains("hour") -> number * 3600
-
             else -> number * 60
         }
 
@@ -765,16 +740,12 @@ class BackgroundWakeService : Service(),
         }
 
         timerRunnable = Runnable {
-
             if (isRunning) {
                 speak("Your timer is finished.")
             }
         }
 
-        handler.postDelayed(
-            timerRunnable!!,
-            seconds * 1000
-        )
+        handler.postDelayed(timerRunnable!!, seconds * 1000)
 
         speak("Timer started.")
     }
@@ -782,18 +753,14 @@ class BackgroundWakeService : Service(),
     private fun makeCall(name: String) {
 
         if (name.isBlank()) {
-
             speak("Please say the contact name.")
-
             return
         }
 
         val number = findContactNumber(name)
 
         if (number.isNullOrBlank()) {
-
             speak("I couldn't find that contact.")
-
             return
         }
 
@@ -807,11 +774,9 @@ class BackgroundWakeService : Service(),
             }
 
             startActivity(intent)
-
             speak("Opening the phone.")
 
         } catch (_: Exception) {
-
             speak("I couldn't open the phone.")
         }
     }
@@ -821,9 +786,7 @@ class BackgroundWakeService : Service(),
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS)
             != PackageManager.PERMISSION_GRANTED
         ) {
-
             speak("Please allow contacts permission first.")
-
             return null
         }
 
@@ -841,16 +804,10 @@ class BackgroundWakeService : Service(),
             )
 
             cursor?.use {
-
-                if (it.moveToFirst()) {
-                    it.getString(0)
-                } else {
-                    null
-                }
+                if (it.moveToFirst()) it.getString(0) else null
             }
 
         } catch (_: Exception) {
-
             null
         }
     }
@@ -860,11 +817,7 @@ class BackgroundWakeService : Service(),
         val parts = details.split(" ", limit = 2)
 
         if (parts.size < 2) {
-
-            speak(
-                "Please say the contact name and message."
-            )
-
+            speak("Please say the contact name and message.")
             return
         }
 
@@ -874,9 +827,7 @@ class BackgroundWakeService : Service(),
         val number = findContactNumber(name)
 
         if (number.isNullOrBlank()) {
-
             speak("I couldn't find that contact.")
-
             return
         }
 
@@ -886,18 +837,14 @@ class BackgroundWakeService : Service(),
                 Intent.ACTION_SENDTO,
                 Uri.parse("smsto:$number")
             ).apply {
-
                 putExtra("sms_body", message)
-
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
             startActivity(intent)
-
             speak("Opening your messages.")
 
         } catch (_: Exception) {
-
             speak("I couldn't open your messages.")
         }
     }
@@ -913,7 +860,6 @@ class BackgroundWakeService : Service(),
             startActivity(intent)
 
         } catch (_: Exception) {
-
             speak("I couldn't open those settings.")
         }
     }
@@ -927,19 +873,14 @@ class BackgroundWakeService : Service(),
 
             if (intent != null) {
 
-                intent.addFlags(
-                    Intent.FLAG_ACTIVITY_NEW_TASK
-                )
-
+                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                 startActivity(intent)
 
             } else {
-
                 speak("I couldn't find that app.")
             }
 
         } catch (_: Exception) {
-
             speak("I couldn't open that app.")
         }
     }
@@ -948,8 +889,7 @@ class BackgroundWakeService : Service(),
 
         try {
 
-            val packages =
-                packageManager.getInstalledPackages(0)
+            val packages = packageManager.getInstalledPackages(0)
 
             val match = packages.firstOrNull { info ->
 
@@ -958,8 +898,7 @@ class BackgroundWakeService : Service(),
                     ?.toString()
                     ?.lowercase(Locale.ROOT)
 
-                label == name ||
-                    label?.contains(name) == true
+                label == name || label?.contains(name) == true
             }
 
             val packageName = match?.packageName
@@ -967,16 +906,13 @@ class BackgroundWakeService : Service(),
             if (packageName != null) {
 
                 speak("Opening $name.")
-
                 openApp(packageName)
 
             } else {
-
                 speak("I couldn't find $name.")
             }
 
         } catch (_: Exception) {
-
             speak("I couldn't find that app.")
         }
     }
@@ -994,7 +930,6 @@ class BackgroundWakeService : Service(),
         }
 
         handler.removeCallbacksAndMessages(null)
-
         executor.shutdownNow()
 
         try {
@@ -1017,11 +952,8 @@ class BackgroundWakeService : Service(),
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-
             stopForeground(STOP_FOREGROUND_REMOVE)
-
         } else {
-
             @Suppress("DEPRECATION")
             stopForeground(true)
         }

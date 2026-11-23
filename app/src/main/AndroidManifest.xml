@@ -1,14 +1,24 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <!-- Microphone and background operation -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
+
+    <!-- Notifications and contacts -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <!-- Internet and floating window -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
+
+    <!-- Installed app discovery -->
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+
+    <!-- Bluetooth -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <uses-permission
@@ -19,13 +29,13 @@
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
 
-    <!-- SIMMY flashlight permission -->
+    <!-- Flashlight -->
     <uses-permission android:name="android.permission.CAMERA" />
 
-    <!-- SIMMY brightness permission -->
+    <!-- Screen brightness -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
 
-    <!-- Allow Android to find an installed speech recognition service -->
+    <!-- Speech recognition service discovery -->
     <queries>
         <intent>
             <action android:name="android.speech.RecognitionService" />
@@ -50,12 +60,15 @@
 
         </activity>
 
+        <!-- Background voice assistant -->
         <service
             android:name=".BackgroundWakeService"
             android:enabled="true"
             android:exported="false"
+            android:stopWithTask="false"
             android:foregroundServiceType="microphone" />
 
+        <!-- Notification reader -->
         <service
             android:name=".MessageNotificationService"
             android:label="SIMMY Message Reader"

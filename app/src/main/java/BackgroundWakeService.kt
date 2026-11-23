@@ -1010,7 +1010,6 @@ class BackgroundWakeService : Service(),
             scheduleVoskRecovery()
         }
     }
-
     // ONLINE ENGLISH / AFRIKAANS RECOGNITION
 
     private fun startOnlineCommandListening() {
@@ -1018,8 +1017,14 @@ class BackgroundWakeService : Service(),
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             onlineRecognitionActive = false
-            awaitingCommand = true
-            speak("Online speech recognition is not available. Please try again.")
+            awaitingCommand = false
+
+            updateNotification(
+                "Online recognition unavailable. Say Mamma to try again."
+            )
+
+            endConversationMode()
+            resumeListening()
             return
         }
 
@@ -1065,10 +1070,15 @@ class BackgroundWakeService : Service(),
                                 SpeechRecognizer.RESULTS_RECOGNITION
                             )
 
+                            // Check every returned result for a music command.
+                            // This helps when the first result is incorrect.
                             val command = matches
-                                ?.firstOrNull()
-                                ?.trim()
-                                ?.lowercase(Locale.ROOT)
+                                ?.map { it.trim().lowercase(Locale.ROOT) }
+                                ?.firstOrNull { it.startsWith("play ") }
+                                ?: matches
+                                    ?.firstOrNull { it.isNotBlank() }
+                                    ?.trim()
+                                    ?.lowercase(Locale.ROOT)
 
                             onlineRecognitionActive = false
                             destroyOnlineRecognizer()
@@ -1088,8 +1098,9 @@ class BackgroundWakeService : Service(),
                                     executeCommand(normalisedCommand)
                                 }
                             } else {
-                                awaitingCommand = true
-                                speak("I didn't catch that. Please say your command again.")
+                                awaitingCommand = false
+                                endConversationMode()
+                                resumeListening()
                             }
                         }
                     }
@@ -1164,11 +1175,17 @@ class BackgroundWakeService : Service(),
 
             onlineSpeechRecognizer?.startListening(intent)
 
-        } catch (_: Exception) {
+        } catch (e: Exception) {
             onlineRecognitionActive = false
             destroyOnlineRecognizer()
-            awaitingCommand = true
-            speak("Online recognition could not start. Please try your command again.")
+            awaitingCommand = false
+
+            updateNotification(
+                "Online recognition could not start. Say Mamma to try again."
+            )
+
+            endConversationMode()
+            resumeListening()
         }
     }
 
@@ -1177,25 +1194,16 @@ class BackgroundWakeService : Service(),
 
         onlineRecognitionActive = false
         destroyOnlineRecognizer()
-        awaitingCommand = true
+        awaitingCommand = false
 
-        val reason = when (error) {
-            SpeechRecognizer.ERROR_NETWORK,
-            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> "There is a network problem."
+        // Do not speak another error message.
+        // Return directly to offline wake-word listening.
+        updateNotification(
+            "Listening stopped. Say Mamma, Hi, or Simon to try again."
+        )
 
-            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
-                "The requested language is not available on the speech service."
-
-            SpeechRecognizer.ERROR_NO_MATCH,
-            SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
-                "I didn't hear a clear command."
-
-            else -> "Online speech recognition is unavailable."
-        }
-
-        updateNotification("Online recognition failed. Please try again.")
-        speak("$reason Please say your command again.")
+        endConversationMode()
+        resumeListening()
     }
 
     private fun destroyOnlineRecognizer() {
@@ -2108,13 +2116,6 @@ class BackgroundWakeService : Service(),
                 resumeMusic()
             }
 
-            text.contains("skip song") ||
-                text.contains("next song") ||
-                text.contains("next track") ||
-                text == "skip" -> {
-                skipMusic()
-            }
-
             // Explicit YouTube or YouTube Music requests
             text.startsWith("play ") &&
                 (text.contains(" on youtube music") ||
@@ -2131,7 +2132,7 @@ class BackgroundWakeService : Service(),
             }
 
             // Simple music command.
-            // "Play Jerusalema" opens YouTube Music search.
+            // "Play Immortal" opens a YouTube Music search.
             text.startsWith("play ") -> {
                 val song = text.removePrefix("play ").trim()
                 playOnYouTube(song, true)

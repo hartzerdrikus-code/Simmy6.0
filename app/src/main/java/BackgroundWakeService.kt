@@ -122,8 +122,6 @@ class BackgroundWakeService : Service(),
     private var speaking = false
     private var recoveryScheduled = false
 
-    // CONVERSATION MODE
-
     private var conversationMode = false
     private var conversationTimeoutRunnable: Runnable? = null
 
@@ -542,8 +540,21 @@ class BackgroundWakeService : Service(),
             } catch (e: Exception) {
                 handler.post {
                     modelLoading = false
-                    showMessage("English model failed: ${e.message}")
-                    stopSelf()
+
+                    val errorDetails =
+                        "${e.javaClass.simpleName}: ${e.message ?: "No error details"}"
+
+                    showMessage("English model failed: $errorDetails")
+
+                    updateNotification(
+                        "English model failed. SIMMY needs attention."
+                    )
+
+                    android.util.Log.e(
+                        "SIMMY_MODEL",
+                        "English model loading failed",
+                        e
+                    )
                 }
             }
         }

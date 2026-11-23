@@ -26,6 +26,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
 import android.provider.ContactsContract
 import android.provider.Settings
 import android.speech.RecognizerIntent
@@ -101,6 +102,8 @@ class BackgroundWakeService : Service(),
     private var overlayView: TextView? = null
     private var overlayPermissionNotificationShown = false
 
+    private var wakeLock: PowerManager.WakeLock? = null
+
     @Volatile
     private var modelLoading = false
 
@@ -110,6 +113,7 @@ class BackgroundWakeService : Service(),
     private var listeningStarted = false
     private var readyMessageSpoken = false
     private var speaking = false
+    private var recoveryScheduled = false
     private var timerRunnable: Runnable? = null
 
     private var lastProcessedText = ""
@@ -159,6 +163,7 @@ class BackgroundWakeService : Service(),
                     try {
                         startForegroundNotification("Starting SIMMY...")
                         isRunning = true
+                        acquireWakeLock()
                         startOverlayPermissionChecker()
                         textToSpeech = TextToSpeech(this, this)
                         loadVoskModel()
@@ -173,6 +178,37 @@ class BackgroundWakeService : Service(),
         }
 
         return START_STICKY
+    }
+
+    // CPU WAKE LOCK
+
+    private fun acquireWakeLock() {
+        try {
+            val powerManager =
+                getSystemService(Context.POWER_SERVICE) as PowerManager
+
+            wakeLock = powerManager.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "SIMMY::BackgroundListening"
+            )
+
+            if (wakeLock?.isHeld != true) {
+                wakeLock?.acquire()
+            }
+        } catch (e: Exception) {
+            showMessage("SIMMY could not keep the processor awake: ${e.message}")
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let {
+                if (it.isHeld) it.release()
+            }
+        } catch (_: Exception) {
+        }
+
+        wakeLock = null
     }
 
     // NOTIFICATIONS
@@ -441,7 +477,7 @@ class BackgroundWakeService : Service(),
         }
 
         modelLoading = true
-        updateNotification("Loading English speech model...")
+        updateNotification("Loading English offline speech model...")
 
         executor.execute {
             try {
@@ -572,13 +608,15 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    // VOSK LISTENING
+    // VOSK LISTENING AND RECOVERY
 
     private fun startVoskListening() {
-        if (!isRunning) return
+        if (!isRunning || onlineRecognitionActive || speaking) return
 
         try {
             val loadedModel = model ?: return
+
+            listeningStarted = false
 
             recognizer = Recognizer(loadedModel, 16000.0f)
             speechService = SpeechService(recognizer, 16000.0f)
@@ -590,9 +628,47 @@ class BackgroundWakeService : Service(),
             )
             announceReady()
         } catch (e: Exception) {
+            listeningStarted = false
             showMessage("SIMMY listening error: ${e.message}")
-            stopSelf()
+            scheduleVoskRecovery()
         }
+    }
+
+    private fun scheduleVoskRecovery() {
+        if (!isRunning ||
+            onlineRecognitionActive ||
+            speaking ||
+            modelLoading ||
+            recoveryScheduled
+        ) return
+
+        recoveryScheduled = true
+        listeningStarted = false
+
+        updateNotification("SIMMY is restarting its microphone...")
+
+        handler.postDelayed({
+            recoveryScheduled = false
+
+            if (!isRunning ||
+                onlineRecognitionActive ||
+                speaking
+            ) return@postDelayed
+
+            try {
+                speechService?.cancel()
+                speechService?.shutdown()
+                speechService = null
+
+                recognizer?.close()
+                recognizer = null
+
+                startVoskListening()
+            } catch (e: Exception) {
+                showMessage("SIMMY is trying to restart listening.")
+                scheduleVoskRecovery()
+            }
+        }, 2000)
     }
 
     private fun announceReady() {
@@ -612,51 +688,51 @@ class BackgroundWakeService : Service(),
 
     override fun onInit(status: Int) {
         if (status == TextToSpeech.SUCCESS) {
-            val result = textToSpeech?.setLanguage(Locale.US)
+            val result = textToSpeech?.setLanguage(Locale("en", "ZA"))
 
-            if (result != TextToSpeech.LANG_MISSING_DATA &&
-                result != TextToSpeech.LANG_NOT_SUPPORTED
+            if (result == TextToSpeech.LANG_MISSING_DATA ||
+                result == TextToSpeech.LANG_NOT_SUPPORTED
             ) {
-                ttsReady = true
+                textToSpeech?.setLanguage(Locale.US)
+            }
 
-                textToSpeech?.setOnUtteranceProgressListener(
-                    object : UtteranceProgressListener() {
-                        override fun onStart(utteranceId: String?) {
-                            speaking = true
-                        }
+            ttsReady = true
 
-                        override fun onDone(utteranceId: String?) {
-                            handler.post {
-                                speaking = false
+            textToSpeech?.setOnUtteranceProgressListener(
+                object : UtteranceProgressListener() {
+                    override fun onStart(utteranceId: String?) {
+                        speaking = true
+                    }
 
-                                if (startOnlineRecognitionAfterSpeech) {
-                                    startOnlineRecognitionAfterSpeech = false
-                                    startOnlineCommandListening()
-                                } else if (!onlineRecognitionActive) {
-                                    resumeListening()
-                                }
-                            }
-                        }
+                    override fun onDone(utteranceId: String?) {
+                        handler.post {
+                            speaking = false
 
-                        override fun onError(utteranceId: String?) {
-                            handler.post {
-                                speaking = false
-
-                                if (startOnlineRecognitionAfterSpeech) {
-                                    startOnlineRecognitionAfterSpeech = false
-                                    startOnlineCommandListening()
-                                } else if (!onlineRecognitionActive) {
-                                    resumeListening()
-                                }
+                            if (startOnlineRecognitionAfterSpeech) {
+                                startOnlineRecognitionAfterSpeech = false
+                                startOnlineCommandListening()
+                            } else if (!onlineRecognitionActive) {
+                                resumeListening()
                             }
                         }
                     }
-                )
 
-                announceReady()
-            } else {
-                showMessage("English voice data is unavailable.")
-            }
+                    override fun onError(utteranceId: String?) {
+                        handler.post {
+                            speaking = false
+
+                            if (startOnlineRecognitionAfterSpeech) {
+                                startOnlineRecognitionAfterSpeech = false
+                                startOnlineCommandListening()
+                            } else if (!onlineRecognitionActive) {
+                                resumeListening()
+                            }
+                        }
+                    }
+                }
+            )
+
+            announceReady()
         } else {
             showMessage("SIMMY voice is unavailable.")
         }
@@ -689,13 +765,18 @@ class BackgroundWakeService : Service(),
         if (!isRunning || onlineRecognitionActive) return
 
         try {
-            speechService?.setPause(false)
-            updateNotification("SIMMY is listening.")
+            if (speechService == null || !listeningStarted) {
+                scheduleVoskRecovery()
+            } else {
+                speechService?.setPause(false)
+                updateNotification("SIMMY is listening.")
+            }
         } catch (_: Exception) {
+            scheduleVoskRecovery()
         }
     }
 
-    // ONLINE SOUTH AFRICAN ENGLISH RECOGNITION
+    // ONLINE ENGLISH / AFRIKAANS RECOGNITION
 
     private fun startOnlineCommandListening() {
         if (!isRunning) return
@@ -710,12 +791,12 @@ class BackgroundWakeService : Service(),
         try {
             speechService?.setPause(true)
 
-            onlineSpeechRecognizer?.destroy()
+            destroyOnlineRecognizer()
             onlineSpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
 
             onlineRecognitionActive = true
             awaitingCommand = false
-            updateNotification("Listening for your command in South African English.")
+            updateNotification("Listening for your command in English or Afrikaans.")
 
             onlineSpeechRecognizer?.setRecognitionListener(
                 object : android.speech.RecognitionListener {
@@ -754,6 +835,21 @@ class BackgroundWakeService : Service(),
                                 ?.trim()
                                 ?.lowercase(Locale.ROOT)
 
+                            val detectedLanguage =
+                                if (Build.VERSION.SDK_INT >= 34) {
+                                    results?.getString(
+                                        "android.speech.extra.DETECTED_LANGUAGE"
+                                    )
+                                } else {
+                                    null
+                                }
+
+                            if (detectedLanguage == "af-ZA") {
+                                textToSpeech?.setLanguage(Locale("af", "ZA"))
+                            } else if (detectedLanguage == "en-ZA") {
+                                textToSpeech?.setLanguage(Locale("en", "ZA"))
+                            }
+
                             onlineRecognitionActive = false
                             destroyOnlineRecognizer()
 
@@ -791,6 +887,28 @@ class BackgroundWakeService : Service(),
                     RecognizerIntent.EXTRA_PROMPT,
                     "SIMMY is listening. Speak your command."
                 )
+
+                // Android 14 and newer: request automatic English/Afrikaans
+                // language detection and switching when the speech provider
+                // supports it and the required language models are installed.
+                if (Build.VERSION.SDK_INT >= 34) {
+                    putExtra(
+                        "android.speech.extra.ENABLE_LANGUAGE_DETECTION",
+                        true
+                    )
+                    putStringArrayListExtra(
+                        "android.speech.extra.LANGUAGE_DETECTION_ALLOWED_LANGUAGES",
+                        arrayListOf("en-ZA", "af-ZA")
+                    )
+                    putExtra(
+                        "android.speech.extra.ENABLE_LANGUAGE_SWITCH",
+                        "balanced"
+                    )
+                    putStringArrayListExtra(
+                        "android.speech.extra.LANGUAGE_SWITCH_ALLOWED_LANGUAGES",
+                        arrayListOf("en-ZA", "af-ZA")
+                    )
+                }
             }
 
             onlineSpeechRecognizer?.startListening(intent)
@@ -816,7 +934,7 @@ class BackgroundWakeService : Service(),
 
             SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
             SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE ->
-                "South African English is not available on the speech service."
+                "The requested language is not available on the speech service."
 
             SpeechRecognizer.ERROR_NO_MATCH,
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT ->
@@ -839,15 +957,86 @@ class BackgroundWakeService : Service(),
         onlineSpeechRecognizer = null
     }
 
+    // COMMAND NORMALISATION AND AFRIKAANS PHRASES
+
     private fun normaliseCommand(command: String): String {
-        return command.lowercase(Locale.ROOT)
+        var text = command.lowercase(Locale.ROOT)
+            .replace("'", "")
+            .replace("’", "")
             .replace(Regex("[^a-z0-9 ]"), " ")
             .replace(Regex("\\s+"), " ")
             .trim()
+
+        text = text
             .replace("wi fi", "wifi")
             .replace("you tube", "youtube")
             .replace("face book", "facebook")
-            .replace("what's app", "whatsapp")
+            .replace("whats app", "whatsapp")
+
+        // Common Afrikaans commands translated into the English
+        // command phrases used by SIMMY.
+        val translations = listOf(
+            "hoe laat is dit" to "what time is it",
+            "wat is die tyd" to "what time is it",
+            "wat is die datum" to "what date is it",
+            "watter dag is dit" to "what date is it",
+            "vandag se datum" to "what date is it",
+            "lees my boodskappe" to "read messages",
+            "lees boodskappe" to "read messages",
+            "maak n nota" to "make a note",
+            "maak nota" to "make a note",
+            "begin opname" to "start recording",
+            "neem n opname" to "start recording",
+            "hou op luister" to "stop listening",
+            "gaan slaap" to "go to sleep",
+            "skakel flitslig aan" to "turn flashlight on",
+            "sit flitslig aan" to "turn flashlight on",
+            "skakel die flitslig aan" to "turn flashlight on",
+            "skakel flitslig af" to "turn flashlight off",
+            "sit flitslig af" to "turn flashlight off",
+            "skakel die flitslig af" to "turn flashlight off",
+            "volume harder" to "increase volume",
+            "maak harder" to "increase volume",
+            "volume sagter" to "decrease volume",
+            "maak sagter" to "decrease volume",
+            "maak bluetooth oop" to "open bluetooth",
+            "maak wifi oop" to "open wifi",
+            "maak instellings oop" to "open settings",
+            "maak kamera oop" to "open camera",
+            "maak youtube oop" to "open youtube",
+            "maak whatsapp oop" to "open whatsapp",
+            "maak facebook oop" to "open facebook",
+            "bel" to "call"
+        )
+
+        for ((afrikaans, english) in translations) {
+            text = text.replace(afrikaans, english)
+        }
+
+        // General Afrikaans app-opening pattern:
+        // "maak [app name] oop" becomes "open [app name]".
+        val makeAppOpen = Regex("^maak (.+) oop$")
+        val makeOpenApp = Regex("^maak oop (.+)$")
+
+        makeAppOpen.find(text)?.let {
+            text = "open ${it.groupValues[1]}"
+        }
+
+        makeOpenApp.find(text)?.let {
+            text = "open ${it.groupValues[1]}"
+        }
+
+        if (text.startsWith("open ")) {
+            text = text.removePrefix("open ").trim()
+                .let { "open $it" }
+        }
+
+        if (text.startsWith("maak ")) {
+            text = text.removePrefix("maak ").trim()
+                .let { "open $it" }
+        }
+
+        return text.trim()
     }
 
     private fun showMessage(message: String) {
@@ -874,10 +1063,16 @@ class BackgroundWakeService : Service(),
     }
 
     override fun onError(exception: Exception?) {
-        showMessage("SIMMY microphone error: ${exception?.message}")
+        showMessage("SIMMY microphone error. Restarting listening...")
+        handler.post {
+            scheduleVoskRecovery()
+        }
     }
 
     override fun onTimeout() {
+        handler.post {
+            scheduleVoskRecovery()
+        }
     }
 
     private fun processVoskResult(json: String?) {
@@ -938,8 +1133,6 @@ class BackgroundWakeService : Service(),
             return
         }
 
-        // SIMMY wake words:
-        // Mamma, Mama, Momma, Hi and Simon.
         val wakeWords = listOf(
             "mamma",
             "mama",
@@ -1731,6 +1924,7 @@ class BackgroundWakeService : Service(),
         listeningStarted = false
         onlineRecognitionActive = false
         startOnlineRecognitionAfterSpeech = false
+        recoveryScheduled = false
 
         handler.removeCallbacks(overlayPermissionChecker)
 
@@ -1741,6 +1935,8 @@ class BackgroundWakeService : Service(),
         removeSimmyOverlay()
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()
+
+        releaseWakeLock()
 
         try {
             destroyOnlineRecognizer()

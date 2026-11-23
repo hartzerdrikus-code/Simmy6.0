@@ -12,6 +12,9 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.content.pm.ResolveInfo
 import android.content.pm.ServiceInfo
+import android.graphics.Color
+import android.graphics.PixelFormat
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Handler
@@ -21,6 +24,9 @@ import android.provider.ContactsContract
 import android.provider.Settings
 import android.speech.tts.TextToSpeech
 import android.speech.tts.UtteranceProgressListener
+import android.view.Gravity
+import android.view.WindowManager
+import android.widget.TextView
 import android.widget.Toast
 import org.json.JSONObject
 import org.vosk.Model
@@ -50,6 +56,7 @@ class BackgroundWakeService : Service(),
         private const val CHANNEL_ID = "simmy_background_channel"
         private const val APP_LAUNCH_CHANNEL_ID = "simmy_app_launch_channel"
         private const val NOTIFICATION_ID = 2001
+        private const val OVERLAY_NOTIFICATION_ID = 7001
         private const val MODEL_NAME = "vosk-model-small-en-us-0.15"
 
         private const val MODEL_URL =
@@ -72,6 +79,10 @@ class BackgroundWakeService : Service(),
     private var speechService: SpeechService? = null
     private var textToSpeech: TextToSpeech? = null
 
+    private var windowManager: WindowManager? = null
+    private var overlayView: TextView? = null
+    private var overlayPermissionNotificationShown = false
+
     @Volatile
     private var modelLoading = false
 
@@ -82,11 +93,31 @@ class BackgroundWakeService : Service(),
     private var speaking = false
     private var timerRunnable: Runnable? = null
 
+    private val overlayPermissionChecker = object : Runnable {
+        override fun run() {
+            if (!isRunning) return
+
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                Settings.canDrawOverlays(this@BackgroundWakeService)
+            ) {
+                createSimmyOverlay()
+            } else {
+                if (!overlayPermissionNotificationShown) {
+                    overlayPermissionNotificationShown = true
+                    showOverlayPermissionNotification()
+                }
+
+                handler.postDelayed(this, 2000)
+            }
+        }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
     }
 
     override fun onStartCommand(
@@ -108,6 +139,9 @@ class BackgroundWakeService : Service(),
                     try {
                         startForegroundNotification("Starting SIMMY...")
                         isRunning = true
+
+                        startOverlayPermissionChecker()
+
                         textToSpeech = TextToSpeech(this, this)
                         loadVoskModel()
 
@@ -115,12 +149,16 @@ class BackgroundWakeService : Service(),
                         showMessage("SIMMY could not start: ${e.message}")
                         stopSelf()
                     }
+                } else {
+                    startOverlayPermissionChecker()
                 }
             }
         }
 
         return START_STICKY
     }
+
+    // NOTIFICATIONS
 
     private fun createNotificationChannel() {
 
@@ -146,7 +184,7 @@ class BackgroundWakeService : Service(),
             )
 
             appChannel.description =
-                "Tap this notification to open the app requested from SIMMY."
+                "SIMMY app opening and permission notifications"
 
             manager.createNotificationChannel(appChannel)
         }
@@ -197,6 +235,207 @@ class BackgroundWakeService : Service(),
                 as NotificationManager
 
         manager.notify(NOTIFICATION_ID, buildNotification(message))
+    }
+
+    private fun showOverlayPermissionNotification() {
+
+        try {
+
+            val settingsIntent = Intent(
+                Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                Uri.parse("package:$packageName")
+            )
+
+            val settingsPendingIntent = PendingIntent.getActivity(
+                this,
+                OVERLAY_NOTIFICATION_ID,
+                settingsIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or
+                    PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = Notification.Builder(
+                this,
+                APP_LAUNCH_CHANNEL_ID
+            )
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("Allow SIMMY to open apps")
+                .setContentText(
+                    "Tap here and switch on Allow display over other apps."
+                )
+                .setContentIntent(settingsPendingIntent)
+                .setAutoCancel(true)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .addAction(
+                    android.R.drawable.ic_menu_view,
+                    "Allow permission",
+                    settingsPendingIntent
+                )
+                .build()
+
+            val manager =
+                getSystemService(Context.NOTIFICATION_SERVICE)
+                    as NotificationManager
+
+            manager.notify(OVERLAY_NOTIFICATION_ID, notification)
+
+        } catch (e: Exception) {
+            showMessage("Could not open SIMMY permission settings.")
+        }
+    }
+
+    private fun showAppLaunchNotification(
+        packageName: String,
+        appLabel: String
+    ) {
+
+        try {
+
+            val launchIntent =
+                packageManager.getLaunchIntentForPackage(packageName)
+                    ?: return
+
+            launchIntent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
+
+            val requestCode =
+                (packageName.hashCode() and 0x7fffffff) + 3000
+
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                requestCode,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or
+                    PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = Notification.Builder(
+                this,
+                APP_LAUNCH_CHANNEL_ID
+            )
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("SIMMY: Open $appLabel")
+                .setContentText("Tap here to open $appLabel.")
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .build()
+
+            val manager =
+                getSystemService(Context.NOTIFICATION_SERVICE)
+                    as NotificationManager
+
+            manager.notify(requestCode, notification)
+
+        } catch (_: Exception) {
+            showMessage("Could not create the app-opening notification.")
+        }
+    }
+
+    // FLOATING SIMMY INDICATOR
+
+    private fun startOverlayPermissionChecker() {
+        handler.removeCallbacks(overlayPermissionChecker)
+        handler.post(overlayPermissionChecker)
+    }
+
+    private fun createSimmyOverlay() {
+
+        if (!isRunning || overlayView != null) return
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M &&
+            !Settings.canDrawOverlays(this)
+        ) {
+            return
+        }
+
+        try {
+
+            val bubble = TextView(this).apply {
+                text = "SIMMY • Listening"
+                setTextColor(Color.WHITE)
+                textSize = 12f
+                gravity = Gravity.CENTER
+                setPadding(18, 12, 18, 12)
+
+                background = GradientDrawable().apply {
+                    setColor(Color.rgb(35, 65, 115))
+                    cornerRadius = 40f
+                    setStroke(2, Color.WHITE)
+                }
+
+                elevation = 8f
+
+                setOnClickListener {
+                    try {
+                        val intent = Intent(
+                            this@BackgroundWakeService,
+                            MainActivity::class.java
+                        ).apply {
+                            flags =
+                                Intent.FLAG_ACTIVITY_NEW_TASK or
+                                    Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        }
+
+                        startActivity(intent)
+
+                    } catch (_: Exception) {
+                        showMessage("Could not open SIMMY.")
+                    }
+                }
+            }
+
+            val overlayType =
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
+                } else {
+                    @Suppress("DEPRECATION")
+                    WindowManager.LayoutParams.TYPE_PHONE
+                }
+
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                WindowManager.LayoutParams.WRAP_CONTENT,
+                overlayType,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                    WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL,
+                PixelFormat.TRANSLUCENT
+            ).apply {
+                gravity = Gravity.TOP or Gravity.END
+                x = 20
+                y = 150
+            }
+
+            windowManager?.addView(bubble, params)
+            overlayView = bubble
+
+            overlayPermissionNotificationShown = false
+
+            val manager =
+                getSystemService(Context.NOTIFICATION_SERVICE)
+                    as NotificationManager
+
+            manager.cancel(OVERLAY_NOTIFICATION_ID)
+
+            updateNotification("Listening for Hi S...")
+
+        } catch (e: Exception) {
+            showMessage("SIMMY floating indicator failed: ${e.message}")
+        }
+    }
+
+    private fun removeSimmyOverlay() {
+
+        try {
+            overlayView?.let {
+                windowManager?.removeView(it)
+            }
+        } catch (_: Exception) {
+        }
+
+        overlayView = null
     }
 
     // MODEL DOWNLOAD AND EXTRACTION
@@ -870,7 +1109,7 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    // IMPROVED APP SEARCH
+    // APP SEARCH
 
     private fun normaliseAppName(name: String): String {
         return name
@@ -916,7 +1155,6 @@ class BackgroundWakeService : Service(),
             "netflix" to "com.netflix.mediaclient",
             "snapchat" to "com.snapchat.android",
             "telegram" to "org.telegram.messenger",
-            "x" to "com.twitter.android",
             "twitter" to "com.twitter.android",
             "samsung internet" to "com.sec.android.app.sbrowser",
             "internet" to "com.sec.android.app.sbrowser",
@@ -986,16 +1224,15 @@ class BackgroundWakeService : Service(),
 
         val apps = getLaunchableApps()
 
-        // First try known Android package names.
         val knownPackage = knownAppPackages()[requested]
 
         if (knownPackage != null) {
 
-            val knownApp = apps.firstOrNull {
+            apps.firstOrNull {
                 it.packageName == knownPackage
+            }?.let {
+                return it
             }
-
-            if (knownApp != null) return knownApp
 
             try {
                 val appInfo = packageManager.getApplicationInfo(
@@ -1016,39 +1253,34 @@ class BackgroundWakeService : Service(),
                 }
 
             } catch (_: Exception) {
-                // Continue searching all installed launcher apps.
+                // Continue searching installed launcher apps.
             }
         }
 
-        // Exact displayed app name.
         apps.firstOrNull {
             normaliseAppName(it.label) == requestedNormal
         }?.let {
             return it
         }
 
-        // Exact package name.
         apps.firstOrNull {
             normaliseAppName(it.packageName) == requestedNormal
         }?.let {
             return it
         }
 
-        // App name begins with what the user said.
         apps.firstOrNull {
             normaliseAppName(it.label).startsWith(requestedNormal)
         }?.let {
             return it
         }
 
-        // Spoken app name appears inside the displayed app name.
         apps.firstOrNull {
             normaliseAppName(it.label).contains(requestedNormal)
         }?.let {
             return it
         }
 
-        // The displayed app name appears inside the spoken phrase.
         apps.firstOrNull {
             requestedNormal.contains(normaliseAppName(it.label)) &&
                 normaliseAppName(it.label).length >= 4
@@ -1079,7 +1311,6 @@ class BackgroundWakeService : Service(),
         }
 
         speak("Opening ${app.label}.")
-
         openApp(app.packageName, app.label)
     }
 
@@ -1098,72 +1329,36 @@ class BackgroundWakeService : Service(),
                 return
             }
 
-            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-
-            try {
-                startActivity(launchIntent)
-            } catch (_: Exception) {
-                // Android may block an activity launch from the background.
-            }
-
-            // Always provide a tap-to-open notification as a fallback.
-            // Android can block background activity launches without
-            // reporting an error to the service.
-            showAppLaunchNotification(packageName, appLabel)
-
-        } catch (_: Exception) {
-            speak("I couldn't open $appLabel.")
-            showAppLaunchNotification(packageName, appLabel)
-        }
-    }
-
-    private fun showAppLaunchNotification(
-        packageName: String,
-        appLabel: String
-    ) {
-
-        try {
-
-            val launchIntent =
-                packageManager.getLaunchIntentForPackage(packageName)
-                    ?: return
-
             launchIntent.addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
                     Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
             )
 
-            val requestCode =
-                (packageName.hashCode() and 0x7fffffff) + 3000
+            val overlayAllowed =
+                Build.VERSION.SDK_INT < Build.VERSION_CODES.M ||
+                    Settings.canDrawOverlays(this)
 
-            val pendingIntent = PendingIntent.getActivity(
-                this,
-                requestCode,
-                launchIntent,
-                PendingIntent.FLAG_UPDATE_CURRENT or
-                    PendingIntent.FLAG_IMMUTABLE
-            )
+            if (overlayAllowed && overlayView != null) {
+                try {
+                    startActivity(launchIntent)
+                    return
+                } catch (_: Exception) {
+                    // Use the notification fallback below.
+                }
+            }
 
-            val notification = Notification.Builder(
-                this,
-                APP_LAUNCH_CHANNEL_ID
-            )
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("SIMMY: Open $appLabel")
-                .setContentText("Tap here to open $appLabel.")
-                .setContentIntent(pendingIntent)
-                .setAutoCancel(true)
-                .setPriority(Notification.PRIORITY_HIGH)
-                .build()
+            showAppLaunchNotification(packageName, appLabel)
 
-            val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
-
-            manager.notify(requestCode, notification)
+            if (!overlayAllowed) {
+                speak("Please allow SIMMY to display over other apps.")
+                showOverlayPermissionNotification()
+            } else {
+                speak("Please tap the notification to open $appLabel.")
+            }
 
         } catch (e: Exception) {
-            showMessage("Could not create the app-opening notification.")
+            speak("I couldn't open $appLabel.")
+            showAppLaunchNotification(packageName, appLabel)
         }
     }
 
@@ -1178,9 +1373,13 @@ class BackgroundWakeService : Service(),
         ttsReady = false
         listeningStarted = false
 
+        handler.removeCallbacks(overlayPermissionChecker)
+
         timerRunnable?.let {
             handler.removeCallbacks(it)
         }
+
+        removeSimmyOverlay()
 
         handler.removeCallbacksAndMessages(null)
         executor.shutdownNow()

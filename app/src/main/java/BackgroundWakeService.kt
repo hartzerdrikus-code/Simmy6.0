@@ -10,6 +10,7 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ResolveInfo
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
@@ -47,6 +48,7 @@ class BackgroundWakeService : Service(),
         const val ACTION_STOP = "com.simmy.assistant.STOP_WAKE"
 
         private const val CHANNEL_ID = "simmy_background_channel"
+        private const val APP_LAUNCH_CHANNEL_ID = "simmy_app_launch_channel"
         private const val NOTIFICATION_ID = 2001
         private const val MODEL_NAME = "vosk-model-small-en-us-0.15"
 
@@ -56,6 +58,11 @@ class BackgroundWakeService : Service(),
         @Volatile
         var isRunning = false
     }
+
+    private data class LaunchableApp(
+        val label: String,
+        val packageName: String
+    )
 
     private val handler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
@@ -119,6 +126,10 @@ class BackgroundWakeService : Service(),
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
 
+            val manager =
+                getSystemService(Context.NOTIFICATION_SERVICE)
+                    as NotificationManager
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "SIMMY Background Listening",
@@ -126,12 +137,18 @@ class BackgroundWakeService : Service(),
             )
 
             channel.description = "SIMMY voice assistant listening"
-
-            val manager =
-                getSystemService(Context.NOTIFICATION_SERVICE)
-                    as NotificationManager
-
             manager.createNotificationChannel(channel)
+
+            val appChannel = NotificationChannel(
+                APP_LAUNCH_CHANNEL_ID,
+                "SIMMY App Opening",
+                NotificationManager.IMPORTANCE_HIGH
+            )
+
+            appChannel.description =
+                "Tap this notification to open the app requested from SIMMY."
+
+            manager.createNotificationChannel(appChannel)
         }
     }
 
@@ -647,13 +664,11 @@ class BackgroundWakeService : Service(),
             }
 
             text.contains("camera") -> {
-                speak("Opening camera.")
-                openApp("com.sec.android.app.camera")
+                openNamedApp("camera")
             }
 
             text.contains("youtube") -> {
-                speak("Opening YouTube.")
-                openApp("com.google.android.youtube")
+                openNamedApp("youtube")
             }
 
             text.contains("timer") -> {
@@ -683,8 +698,7 @@ class BackgroundWakeService : Service(),
             }
 
             text.contains("whatsapp") -> {
-                speak("Opening WhatsApp.")
-                openApp("com.whatsapp")
+                openNamedApp("whatsapp")
             }
 
             text.startsWith("open ") -> {
@@ -737,6 +751,8 @@ class BackgroundWakeService : Service(),
         handler.postDelayed(timerRunnable!!, seconds * 1000)
         speak("Timer started.")
     }
+
+    // CONTACTS AND CALLING
 
     private fun makeCall(name: String) {
 
@@ -837,6 +853,8 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    // SETTINGS
+
     private fun openSettings(action: String) {
 
         try {
@@ -852,52 +870,300 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    private fun openApp(packageName: String) {
+    // IMPROVED APP SEARCH
+
+    private fun normaliseAppName(name: String): String {
+        return name
+            .lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9]"), "")
+    }
+
+    private fun cleanRequestedAppName(name: String): String {
+
+        return name.lowercase(Locale.ROOT)
+            .replace(Regex("[^a-z0-9 ]"), " ")
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .removePrefix("please open ")
+            .removePrefix("open ")
+            .removeSuffix(" application")
+            .removeSuffix(" app")
+            .trim()
+    }
+
+    private fun knownAppPackages(): Map<String, String> {
+
+        return mapOf(
+            "youtube" to "com.google.android.youtube",
+            "youtube music" to "com.google.android.apps.youtube.music",
+            "facebook" to "com.facebook.katana",
+            "whatsapp" to "com.whatsapp",
+            "whatsapp business" to "com.whatsapp.w4b",
+            "instagram" to "com.instagram.android",
+            "tiktok" to "com.zhiliaoapp.musically",
+            "chrome" to "com.android.chrome",
+            "google chrome" to "com.android.chrome",
+            "gmail" to "com.google.android.gm",
+            "google maps" to "com.google.android.apps.maps",
+            "maps" to "com.google.android.apps.maps",
+            "google photos" to "com.google.android.apps.photos",
+            "photos" to "com.google.android.apps.photos",
+            "play store" to "com.android.vending",
+            "google play store" to "com.android.vending",
+            "google" to "com.google.android.googlequicksearchbox",
+            "messenger" to "com.facebook.orca",
+            "spotify" to "com.spotify.music",
+            "netflix" to "com.netflix.mediaclient",
+            "snapchat" to "com.snapchat.android",
+            "telegram" to "org.telegram.messenger",
+            "x" to "com.twitter.android",
+            "twitter" to "com.twitter.android",
+            "samsung internet" to "com.sec.android.app.sbrowser",
+            "internet" to "com.sec.android.app.sbrowser",
+            "samsung notes" to "com.samsung.android.app.notes",
+            "notes" to "com.samsung.android.app.notes",
+            "calculator" to "com.sec.android.app.popupcalculator",
+            "clock" to "com.sec.android.app.clockpackage",
+            "gallery" to "com.sec.android.gallery3d",
+            "phone" to "com.samsung.android.dialer",
+            "contacts" to "com.samsung.android.contacts",
+            "calendar" to "com.samsung.android.calendar",
+            "my files" to "com.sec.android.app.myfiles",
+            "files" to "com.sec.android.app.myfiles",
+            "camera" to "com.sec.android.app.camera"
+        )
+    }
+
+    private fun getLaunchableApps(): List<LaunchableApp> {
+
+        val apps = mutableListOf<LaunchableApp>()
 
         try {
 
-            val intent =
-                packageManager.getLaunchIntentForPackage(packageName)
-
-            if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                startActivity(intent)
-            } else {
-                speak("I couldn't find that app.")
+            val launcherIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_LAUNCHER)
             }
 
-        } catch (_: Exception) {
-            speak("I couldn't open that app.")
+            val activities: List<ResolveInfo> =
+                packageManager.queryIntentActivities(launcherIntent, 0)
+
+            for (resolveInfo in activities) {
+
+                val activityInfo = resolveInfo.activityInfo ?: continue
+                val packageName = activityInfo.packageName
+
+                val label = try {
+                    resolveInfo.loadLabel(packageManager).toString()
+                } catch (_: Exception) {
+                    packageName
+                }
+
+                if (label.isNotBlank() &&
+                    apps.none { it.packageName == packageName }
+                ) {
+                    apps.add(
+                        LaunchableApp(
+                            label = label,
+                            packageName = packageName
+                        )
+                    )
+                }
+            }
+
+        } catch (e: Exception) {
+            showMessage("Could not search installed apps: ${e.message}")
         }
+
+        return apps
+    }
+
+    private fun findLaunchableApp(requestedName: String): LaunchableApp? {
+
+        val requested = cleanRequestedAppName(requestedName)
+        val requestedNormal = normaliseAppName(requested)
+
+        if (requestedNormal.isBlank()) return null
+
+        val apps = getLaunchableApps()
+
+        // First try known Android package names.
+        val knownPackage = knownAppPackages()[requested]
+
+        if (knownPackage != null) {
+
+            val knownApp = apps.firstOrNull {
+                it.packageName == knownPackage
+            }
+
+            if (knownApp != null) return knownApp
+
+            try {
+                val appInfo = packageManager.getApplicationInfo(
+                    knownPackage,
+                    0
+                )
+
+                val launchIntent =
+                    packageManager.getLaunchIntentForPackage(knownPackage)
+
+                if (launchIntent != null) {
+                    return LaunchableApp(
+                        label = packageManager
+                            .getApplicationLabel(appInfo)
+                            .toString(),
+                        packageName = knownPackage
+                    )
+                }
+
+            } catch (_: Exception) {
+                // Continue searching all installed launcher apps.
+            }
+        }
+
+        // Exact displayed app name.
+        apps.firstOrNull {
+            normaliseAppName(it.label) == requestedNormal
+        }?.let {
+            return it
+        }
+
+        // Exact package name.
+        apps.firstOrNull {
+            normaliseAppName(it.packageName) == requestedNormal
+        }?.let {
+            return it
+        }
+
+        // App name begins with what the user said.
+        apps.firstOrNull {
+            normaliseAppName(it.label).startsWith(requestedNormal)
+        }?.let {
+            return it
+        }
+
+        // Spoken app name appears inside the displayed app name.
+        apps.firstOrNull {
+            normaliseAppName(it.label).contains(requestedNormal)
+        }?.let {
+            return it
+        }
+
+        // The displayed app name appears inside the spoken phrase.
+        apps.firstOrNull {
+            requestedNormal.contains(normaliseAppName(it.label)) &&
+                normaliseAppName(it.label).length >= 4
+        }?.let {
+            return it
+        }
+
+        return null
     }
 
     private fun openNamedApp(name: String) {
 
+        val cleanedName = cleanRequestedAppName(name)
+
+        if (cleanedName.isBlank()) {
+            speak("Please tell me which app to open.")
+            return
+        }
+
+        val app = findLaunchableApp(cleanedName)
+
+        if (app == null) {
+            speak("I couldn't find $cleanedName on your phone.")
+            showMessage(
+                "SIMMY could not find $cleanedName. Check that the app is installed."
+            )
+            return
+        }
+
+        speak("Opening ${app.label}.")
+
+        openApp(app.packageName, app.label)
+    }
+
+    private fun openApp(
+        packageName: String,
+        appLabel: String
+    ) {
+
         try {
 
-            val packages = packageManager.getInstalledPackages(0)
+            val launchIntent =
+                packageManager.getLaunchIntentForPackage(packageName)
 
-            val match = packages.firstOrNull { info ->
-
-                val label = info.applicationInfo
-                    ?.loadLabel(packageManager)
-                    ?.toString()
-                    ?.lowercase(Locale.ROOT)
-
-                label == name || label?.contains(name) == true
+            if (launchIntent == null) {
+                speak("I found $appLabel, but it has no opening screen.")
+                return
             }
 
-            val packageName = match?.packageName
+            launchIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
 
-            if (packageName != null) {
-                speak("Opening $name.")
-                openApp(packageName)
-            } else {
-                speak("I couldn't find $name.")
+            try {
+                startActivity(launchIntent)
+            } catch (_: Exception) {
+                // Android may block an activity launch from the background.
             }
+
+            // Always provide a tap-to-open notification as a fallback.
+            // Android can block background activity launches without
+            // reporting an error to the service.
+            showAppLaunchNotification(packageName, appLabel)
 
         } catch (_: Exception) {
-            speak("I couldn't find that app.")
+            speak("I couldn't open $appLabel.")
+            showAppLaunchNotification(packageName, appLabel)
+        }
+    }
+
+    private fun showAppLaunchNotification(
+        packageName: String,
+        appLabel: String
+    ) {
+
+        try {
+
+            val launchIntent =
+                packageManager.getLaunchIntentForPackage(packageName)
+                    ?: return
+
+            launchIntent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
+
+            val requestCode =
+                (packageName.hashCode() and 0x7fffffff) + 3000
+
+            val pendingIntent = PendingIntent.getActivity(
+                this,
+                requestCode,
+                launchIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or
+                    PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val notification = Notification.Builder(
+                this,
+                APP_LAUNCH_CHANNEL_ID
+            )
+                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setContentTitle("SIMMY: Open $appLabel")
+                .setContentText("Tap here to open $appLabel.")
+                .setContentIntent(pendingIntent)
+                .setAutoCancel(true)
+                .setPriority(Notification.PRIORITY_HIGH)
+                .build()
+
+            val manager =
+                getSystemService(Context.NOTIFICATION_SERVICE)
+                    as NotificationManager
+
+            manager.notify(requestCode, notification)
+
+        } catch (e: Exception) {
+            showMessage("Could not create the app-opening notification.")
         }
     }
 
@@ -909,6 +1175,8 @@ class BackgroundWakeService : Service(),
         awaitingCommand = false
         modelLoading = false
         speaking = false
+        ttsReady = false
+        listeningStarted = false
 
         timerRunnable?.let {
             handler.removeCallbacks(it)

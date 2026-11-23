@@ -26,12 +26,20 @@ import org.vosk.Model
 import org.vosk.Recognizer
 import org.vosk.android.RecognitionListener
 import org.vosk.android.SpeechService
-import org.vosk.android.StorageService
+import java.io.BufferedInputStream
+import java.io.BufferedOutputStream
+import java.io.File
+import java.io.FileOutputStream
+import java.net.HttpURLConnection
+import java.net.URL
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import java.util.zip.ZipInputStream
+import java.util.concurrent.Executors
 
-class BackgroundWakeService : Service(), RecognitionListener,
+class BackgroundWakeService : Service(),
+    RecognitionListener,
     TextToSpeech.OnInitListener {
 
     companion object {
@@ -41,19 +49,31 @@ class BackgroundWakeService : Service(), RecognitionListener,
         private const val CHANNEL_ID = "simmy_background_channel"
         private const val NOTIFICATION_ID = 2001
 
+        private const val MODEL_NAME = "vosk-model-small-en-us-0.15"
+
+        private const val MODEL_URL =
+            "https://alphacephei.com/vosk/models/vosk-model-small-en-us-0.15.zip"
+
         @Volatile
         var isRunning = false
     }
 
     private val handler = Handler(Looper.getMainLooper())
 
+    private val executor = Executors.newSingleThreadExecutor()
+
     private var model: Model? = null
+    private var recognizer: Recognizer? = null
     private var speechService: SpeechService? = null
     private var textToSpeech: TextToSpeech? = null
 
+    @Volatile
+    private var modelLoading = false
+
     private var ttsReady = false
     private var awaitingCommand = false
-    private var modelLoading = false
+    private var listeningStarted = false
+    private var readyMessageSpoken = false
 
     private var timerRunnable: Runnable? = null
 
@@ -71,15 +91,19 @@ class BackgroundWakeService : Service(), RecognitionListener,
     ): Int {
 
         when (intent?.action) {
+
             ACTION_STOP -> {
                 stopSelf()
                 return START_NOT_STICKY
             }
 
             ACTION_START, null -> {
+
                 if (!isRunning) {
+
                     try {
                         startForegroundNotification()
+
                         isRunning = true
 
                         textToSpeech = TextToSpeech(this, this)
@@ -87,7 +111,11 @@ class BackgroundWakeService : Service(), RecognitionListener,
                         loadVoskModel()
 
                     } catch (e: Exception) {
-                        showMessage("SIMMY could not start: ${e.message}")
+
+                        showMessage(
+                            "SIMMY could not start: ${e.message}"
+                        )
+
                         stopSelf()
                     }
                 }
@@ -98,14 +126,17 @@ class BackgroundWakeService : Service(), RecognitionListener,
     }
 
     private fun createNotificationChannel() {
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "SIMMY Background Listening",
                 NotificationManager.IMPORTANCE_LOW
             )
 
-            channel.description = "SIMMY voice assistant listening"
+            channel.description =
+                "SIMMY voice assistant listening"
 
             val manager =
                 getSystemService(Context.NOTIFICATION_SERVICE)
@@ -116,7 +147,9 @@ class BackgroundWakeService : Service(), RecognitionListener,
     }
 
     private fun startForegroundNotification() {
-        val notificationIntent = Intent(this, MainActivity::class.java)
+
+        val notificationIntent =
+            Intent(this, MainActivity::class.java)
 
         val pendingIntent = PendingIntent.getActivity(
             this,
@@ -126,7 +159,10 @@ class BackgroundWakeService : Service(), RecognitionListener,
                 PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = Notification.Builder(this, CHANNEL_ID)
+        val notification = Notification.Builder(
+            this,
+            CHANNEL_ID
+        )
             .setContentTitle("SIMMY is active")
             .setContentText("Say Hi S to talk to SIMMY")
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
@@ -135,19 +171,27 @@ class BackgroundWakeService : Service(), RecognitionListener,
             .build()
 
         if (Build.VERSION.SDK_INT >= 34) {
+
             startForeground(
                 NOTIFICATION_ID,
                 notification,
                 ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
             )
+
         } else {
-            startForeground(NOTIFICATION_ID, notification)
+
+            startForeground(
+                NOTIFICATION_ID,
+                notification
+            )
         }
     }
 
+    // DOWNLOAD AND EXTRACT THE ENGLISH MODEL
+
     private fun loadVoskModel() {
+
         if (modelLoading) return
-        modelLoading = true
 
         if (checkSelfPermission(Manifest.permission.RECORD_AUDIO)
             != PackageManager.PERMISSION_GRANTED
@@ -157,46 +201,198 @@ class BackgroundWakeService : Service(), RecognitionListener,
             return
         }
 
-        StorageService.unpack(
-            this,
-            "model-en-us",
-            "model",
-            { loadedModel ->
-                modelLoading = false
+        modelLoading = true
 
-                if (!isRunning) {
-                    loadedModel.close()
-                    return@unpack
+        executor.execute {
+
+            try {
+
+                val modelDirectory = File(filesDir, MODEL_NAME)
+
+                if (!isModelValid(modelDirectory)) {
+
+                    modelDirectory.deleteRecursively()
+
+                    val zipFile = File(cacheDir, "vosk-english.zip")
+
+                    downloadModel(zipFile)
+
+                    extractModel(zipFile, filesDir)
+
+                    zipFile.delete()
                 }
 
-                model = loadedModel
+                if (!isModelValid(modelDirectory)) {
+                    throw Exception(
+                        "English model files are incomplete."
+                    )
+                }
 
-                startVoskListening()
+                val loadedModel =
+                    Model(modelDirectory.absolutePath)
 
-            },
-            { exception ->
-                modelLoading = false
+                handler.post {
 
-                showMessage(
-                    "Could not load English model: ${exception.message}"
-                )
+                    modelLoading = false
 
-                stopSelf()
+                    if (!isRunning) {
+                        loadedModel.close()
+                        return@post
+                    }
+
+                    model = loadedModel
+
+                    startVoskListening()
+                }
+
+            } catch (e: Exception) {
+
+                handler.post {
+
+                    modelLoading = false
+
+                    showMessage(
+                        "English model failed: ${e.message}"
+                    )
+
+                    stopSelf()
+                }
             }
-        )
+        }
     }
 
+    private fun isModelValid(directory: File): Boolean {
+
+        return directory.exists() &&
+            File(directory, "am").isDirectory &&
+            File(directory, "conf").isDirectory &&
+            File(directory, "graph").isDirectory
+    }
+
+    private fun downloadModel(destination: File) {
+
+        val connection =
+            URL(MODEL_URL).openConnection() as HttpURLConnection
+
+        try {
+
+            connection.connectTimeout = 30000
+            connection.readTimeout = 120000
+            connection.requestMethod = "GET"
+            connection.connect()
+
+            if (connection.responseCode !=
+                HttpURLConnection.HTTP_OK
+            ) {
+                throw Exception(
+                    "Download failed. HTTP ${connection.responseCode}"
+                )
+            }
+
+            BufferedInputStream(connection.inputStream).use { input ->
+
+                FileOutputStream(destination).use { output ->
+
+                    val buffer = ByteArray(16384)
+
+                    while (true) {
+
+                        if (Thread.currentThread().isInterrupted) {
+                            throw InterruptedException()
+                        }
+
+                        val count = input.read(buffer)
+
+                        if (count == -1) break
+
+                        output.write(buffer, 0, count)
+                    }
+
+                    output.flush()
+                }
+            }
+
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun extractModel(
+        zipFile: File,
+        destination: File
+    ) {
+
+        val destinationPath =
+            destination.canonicalPath + File.separator
+
+        ZipInputStream(
+            BufferedInputStream(zipFile.inputStream())
+        ).use { zip ->
+
+            var entry = zip.nextEntry
+
+            while (entry != null) {
+
+                if (Thread.currentThread().isInterrupted) {
+                    throw InterruptedException()
+                }
+
+                val outputFile =
+                    File(destination, entry.name)
+
+                val outputPath = outputFile.canonicalPath
+
+                if (!outputPath.startsWith(destinationPath)) {
+                    throw Exception("Invalid model archive.")
+                }
+
+                if (entry.isDirectory) {
+
+                    outputFile.mkdirs()
+
+                } else {
+
+                    outputFile.parentFile?.mkdirs()
+
+                    BufferedOutputStream(
+                        FileOutputStream(outputFile)
+                    ).use { output ->
+
+                        val buffer = ByteArray(16384)
+
+                        while (true) {
+
+                            val count = zip.read(buffer)
+
+                            if (count == -1) break
+
+                            output.write(buffer, 0, count)
+                        }
+
+                        output.flush()
+                    }
+                }
+
+                zip.closeEntry()
+                entry = zip.nextEntry
+            }
+        }
+    }
+
+    // START CONTINUOUS VOSK LISTENING
+
     private fun startVoskListening() {
+
         if (!isRunning) return
 
         try {
+
             val loadedModel = model ?: return
 
-            speechService?.stop()
-            speechService?.shutdown()
-            speechService = null
-
-            val recognizer = Recognizer(loadedModel, 16000.0f)
+            recognizer = Recognizer(
+                loadedModel,
+                16000.0f
+            )
 
             speechService = SpeechService(
                 recognizer,
@@ -205,21 +401,48 @@ class BackgroundWakeService : Service(), RecognitionListener,
 
             speechService?.startListening(this)
 
-            speak("SIMMY is ready. Say Hi S.")
+            listeningStarted = true
+
+            announceReady()
 
         } catch (e: Exception) {
-            showMessage("Listening error: ${e.message}")
+
+            showMessage(
+                "SIMMY listening error: ${e.message}"
+            )
+
             stopSelf()
         }
     }
 
+    private fun announceReady() {
+
+        if (!isRunning ||
+            !ttsReady ||
+            !listeningStarted ||
+            readyMessageSpoken
+        ) {
+            return
+        }
+
+        readyMessageSpoken = true
+
+        speak("SIMMY is ready. Say Hi S.")
+    }
+
+    // TEXT TO SPEECH
+
     override fun onInit(status: Int) {
+
         if (status == TextToSpeech.SUCCESS) {
-            val result = textToSpeech?.setLanguage(Locale.US)
+
+            val result =
+                textToSpeech?.setLanguage(Locale.US)
 
             if (result != TextToSpeech.LANG_MISSING_DATA &&
                 result != TextToSpeech.LANG_NOT_SUPPORTED
             ) {
+
                 ttsReady = true
 
                 textToSpeech?.setOnUtteranceProgressListener(
@@ -228,28 +451,33 @@ class BackgroundWakeService : Service(), RecognitionListener,
                         override fun onStart(utteranceId: String?) {}
 
                         override fun onDone(utteranceId: String?) {
+
                             handler.post {
                                 resumeListening()
                             }
                         }
 
                         override fun onError(utteranceId: String?) {
+
                             handler.post {
                                 resumeListening()
                             }
                         }
                     }
                 )
+
+                announceReady()
             }
+
+        } else {
+
+            showMessage("SIMMY voice is unavailable.")
         }
     }
 
     private fun speak(message: String) {
-        if (!isRunning) return
 
-        if (!ttsReady || textToSpeech == null) {
-            return
-        }
+        if (!isRunning || !ttsReady) return
 
         speechService?.setPause(true)
 
@@ -262,6 +490,7 @@ class BackgroundWakeService : Service(), RecognitionListener,
     }
 
     private fun resumeListening() {
+
         if (!isRunning) return
 
         try {
@@ -271,7 +500,9 @@ class BackgroundWakeService : Service(), RecognitionListener,
     }
 
     private fun showMessage(message: String) {
+
         handler.post {
+
             Toast.makeText(
                 applicationContext,
                 message,
@@ -280,34 +511,45 @@ class BackgroundWakeService : Service(), RecognitionListener,
         }
     }
 
+    // VOSK RECOGNITION CALLBACKS
+
     override fun onResult(hypothesis: String?) {
+
         processVoskResult(hypothesis)
     }
 
     override fun onPartialResult(hypothesis: String?) {
-        // Wait for a complete spoken phrase before processing commands.
+        // Wait for complete phrases.
     }
 
     override fun onFinalResult(hypothesis: String?) {
-        processVoskResult(hypothesis)
+        // Continuous listening normally uses onResult.
     }
 
     override fun onError(exception: Exception?) {
-        showMessage("SIMMY listening error: ${exception?.message}")
+
+        showMessage(
+            "SIMMY microphone error: ${exception?.message}"
+        )
     }
 
     override fun onTimeout() {
-        // Vosk normally continues listening through SpeechService.
+        // Continuous listening has no timeout.
     }
 
     private fun processVoskResult(json: String?) {
+
         if (!isRunning || json.isNullOrBlank()) return
 
         val words = try {
-            JSONObject(json).optString("text", "")
+
+            JSONObject(json)
+                .optString("text", "")
                 .trim()
                 .lowercase(Locale.ROOT)
+
         } catch (_: Exception) {
+
             ""
         }
 
@@ -316,7 +558,10 @@ class BackgroundWakeService : Service(), RecognitionListener,
         processRecognizedWords(words)
     }
 
+    // WAKE WORD
+
     private fun processRecognizedWords(words: String) {
+
         val wakeWords = listOf(
             "hi s",
             "hi see",
@@ -332,12 +577,17 @@ class BackgroundWakeService : Service(), RecognitionListener,
         }
 
         if (wakeWord != null) {
-            val command = words.substringAfter(wakeWord).trim()
+
+            val command =
+                words.substringAfter(wakeWord).trim()
 
             if (command.isNotBlank()) {
+
                 awaitingCommand = false
                 executeCommand(command)
+
             } else {
+
                 awaitingCommand = true
                 speak("Yes, I'm listening.")
             }
@@ -346,16 +596,22 @@ class BackgroundWakeService : Service(), RecognitionListener,
         }
 
         if (awaitingCommand) {
+
             awaitingCommand = false
             executeCommand(words)
         }
     }
 
+    // VOICE COMMANDS
+
     private fun executeCommand(command: String) {
+
         val text = command.lowercase(Locale.ROOT)
 
         when {
+
             text.contains("time") -> {
+
                 val time = SimpleDateFormat(
                     "h:mm a",
                     Locale.getDefault()
@@ -378,7 +634,8 @@ class BackgroundWakeService : Service(), RecognitionListener,
             text.contains("read messages") ||
                 text.contains("my messages") -> {
 
-                val message = MessageNotificationService.latestMessage
+                val message =
+                    MessageNotificationService.latestMessage
 
                 if (message.isNullOrBlank()) {
                     speak("I don't have any new messages.")
@@ -388,26 +645,39 @@ class BackgroundWakeService : Service(), RecognitionListener,
             }
 
             text.contains("bluetooth") -> {
+
                 speak("Opening Bluetooth settings.")
-                openSettings(Settings.ACTION_BLUETOOTH_SETTINGS)
+
+                openSettings(
+                    Settings.ACTION_BLUETOOTH_SETTINGS
+                )
             }
 
             text.contains("settings") -> {
+
                 speak("Opening settings.")
-                openSettings(Settings.ACTION_SETTINGS)
+
+                openSettings(
+                    Settings.ACTION_SETTINGS
+                )
             }
 
             text.contains("camera") -> {
+
                 speak("Opening camera.")
+
                 openApp("com.sec.android.app.camera")
             }
 
             text.contains("youtube") -> {
+
                 speak("Opening YouTube.")
+
                 openApp("com.google.android.youtube")
             }
 
             text.contains("timer") -> {
+
                 startTimer(text)
             }
 
@@ -434,12 +704,17 @@ class BackgroundWakeService : Service(), RecognitionListener,
             }
 
             text.contains("whatsapp") -> {
+
                 speak("Opening WhatsApp.")
+
                 openApp("com.whatsapp")
             }
 
             text.startsWith("open ") -> {
-                openNamedApp(text.removePrefix("open ").trim())
+
+                openNamedApp(
+                    text.removePrefix("open ").trim()
+                )
             }
 
             text.contains("stop listening") ||
@@ -454,25 +729,34 @@ class BackgroundWakeService : Service(), RecognitionListener,
             }
 
             else -> {
-                speak("Sorry, I don't understand that command yet.")
+
+                speak(
+                    "Sorry, I don't understand that command yet."
+                )
             }
         }
     }
 
     private fun startTimer(command: String) {
+
         val number = Regex("\\d+")
             .find(command)
             ?.value
             ?.toLongOrNull()
 
         if (number == null || number <= 0) {
+
             speak("Please tell me how many minutes.")
+
             return
         }
 
         val seconds = when {
+
             command.contains("second") -> number
+
             command.contains("hour") -> number * 3600
+
             else -> number * 60
         }
 
@@ -481,6 +765,7 @@ class BackgroundWakeService : Service(), RecognitionListener,
         }
 
         timerRunnable = Runnable {
+
             if (isRunning) {
                 speak("Your timer is finished.")
             }
@@ -495,19 +780,25 @@ class BackgroundWakeService : Service(), RecognitionListener,
     }
 
     private fun makeCall(name: String) {
+
         if (name.isBlank()) {
+
             speak("Please say the contact name.")
+
             return
         }
 
         val number = findContactNumber(name)
 
         if (number.isNullOrBlank()) {
+
             speak("I couldn't find that contact.")
+
             return
         }
 
         try {
+
             val intent = Intent(
                 Intent.ACTION_DIAL,
                 Uri.parse("tel:$number")
@@ -516,22 +807,28 @@ class BackgroundWakeService : Service(), RecognitionListener,
             }
 
             startActivity(intent)
+
             speak("Opening the phone.")
 
         } catch (_: Exception) {
+
             speak("I couldn't open the phone.")
         }
     }
 
     private fun findContactNumber(name: String): String? {
+
         if (checkSelfPermission(Manifest.permission.READ_CONTACTS)
             != PackageManager.PERMISSION_GRANTED
         ) {
+
             speak("Please allow contacts permission first.")
+
             return null
         }
 
         return try {
+
             val cursor = contentResolver.query(
                 ContactsContract.CommonDataKinds.Phone.CONTENT_URI,
                 arrayOf(
@@ -544,6 +841,7 @@ class BackgroundWakeService : Service(), RecognitionListener,
             )
 
             cursor?.use {
+
                 if (it.moveToFirst()) {
                     it.getString(0)
                 } else {
@@ -552,46 +850,62 @@ class BackgroundWakeService : Service(), RecognitionListener,
             }
 
         } catch (_: Exception) {
+
             null
         }
     }
 
     private fun sendText(details: String) {
+
         val parts = details.split(" ", limit = 2)
 
         if (parts.size < 2) {
-            speak("Please say the contact name and message.")
+
+            speak(
+                "Please say the contact name and message."
+            )
+
             return
         }
 
         val name = parts[0]
         val message = parts[1]
+
         val number = findContactNumber(name)
 
         if (number.isNullOrBlank()) {
+
             speak("I couldn't find that contact.")
+
             return
         }
 
         try {
+
             val intent = Intent(
                 Intent.ACTION_SENDTO,
                 Uri.parse("smsto:$number")
             ).apply {
+
                 putExtra("sms_body", message)
+
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
 
             startActivity(intent)
+
             speak("Opening your messages.")
 
         } catch (_: Exception) {
+
             speak("I couldn't open your messages.")
         }
     }
 
     private fun openSettings(action: String) {
+
         try {
+
             val intent = Intent(action).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
@@ -599,55 +913,78 @@ class BackgroundWakeService : Service(), RecognitionListener,
             startActivity(intent)
 
         } catch (_: Exception) {
+
             speak("I couldn't open those settings.")
         }
     }
 
     private fun openApp(packageName: String) {
+
         try {
+
             val intent =
                 packageManager.getLaunchIntentForPackage(packageName)
 
             if (intent != null) {
-                intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+                intent.addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK
+                )
+
                 startActivity(intent)
+
             } else {
+
                 speak("I couldn't find that app.")
             }
 
         } catch (_: Exception) {
+
             speak("I couldn't open that app.")
         }
     }
 
     private fun openNamedApp(name: String) {
+
         try {
-            val packages = packageManager.getInstalledPackages(0)
+
+            val packages =
+                packageManager.getInstalledPackages(0)
 
             val match = packages.firstOrNull { info ->
+
                 val label = info.applicationInfo
                     ?.loadLabel(packageManager)
                     ?.toString()
                     ?.lowercase(Locale.ROOT)
 
-                label == name || label?.contains(name) == true
+                label == name ||
+                    label?.contains(name) == true
             }
 
             val packageName = match?.packageName
 
             if (packageName != null) {
+
                 speak("Opening $name.")
+
                 openApp(packageName)
+
             } else {
+
                 speak("I couldn't find $name.")
             }
 
         } catch (_: Exception) {
+
             speak("I couldn't find that app.")
         }
     }
 
+    // CLEANUP
+
     override fun onDestroy() {
+
         isRunning = false
         awaitingCommand = false
         modelLoading = false
@@ -658,10 +995,16 @@ class BackgroundWakeService : Service(), RecognitionListener,
 
         handler.removeCallbacksAndMessages(null)
 
+        executor.shutdownNow()
+
         try {
-            speechService?.stop()
+
+            speechService?.cancel()
             speechService?.shutdown()
             speechService = null
+
+            recognizer?.close()
+            recognizer = null
 
             textToSpeech?.stop()
             textToSpeech?.shutdown()
@@ -674,8 +1017,11 @@ class BackgroundWakeService : Service(), RecognitionListener,
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+
             stopForeground(STOP_FOREGROUND_REMOVE)
+
         } else {
+
             @Suppress("DEPRECATION")
             stopForeground(true)
         }

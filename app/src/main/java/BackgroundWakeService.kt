@@ -93,7 +93,6 @@ class BackgroundWakeService : Service(),
     private var speechService: SpeechService? = null
     private var textToSpeech: TextToSpeech? = null
 
-    // Android online speech recognition
     private var onlineSpeechRecognizer: SpeechRecognizer? = null
     private var onlineRecognitionActive = false
     private var startOnlineRecognitionAfterSpeech = false
@@ -409,7 +408,9 @@ class BackgroundWakeService : Service(),
                 getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 
             manager.cancel(OVERLAY_NOTIFICATION_ID)
-            updateNotification("Listening for Hi, Make a note, or Start recording.")
+            updateNotification(
+                "Listening for Mamma, Hi, Simon, Make a note, or Start recording."
+            )
 
         } catch (e: Exception) {
             showMessage("SIMMY floating indicator failed: ${e.message}")
@@ -584,7 +585,9 @@ class BackgroundWakeService : Service(),
             speechService?.startListening(this)
 
             listeningStarted = true
-            updateNotification("Listening for Hi, Make a note, or Start recording.")
+            updateNotification(
+                "Listening for Mamma, Hi, Simon, Make a note, or Start recording."
+            )
             announceReady()
         } catch (e: Exception) {
             showMessage("SIMMY listening error: ${e.message}")
@@ -600,7 +603,9 @@ class BackgroundWakeService : Service(),
         ) return
 
         readyMessageSpoken = true
-        speak("SIMMY is ready. Say Hi, Make a note, or Start recording.")
+        speak(
+            "SIMMY is ready. Say Mamma, Hi, or Simon, Make a note, or Start recording."
+        )
     }
 
     // TEXT TO SPEECH
@@ -862,7 +867,6 @@ class BackgroundWakeService : Service(),
     }
 
     override fun onPartialResult(hypothesis: String?) {
-        // Complete phrases are processed in onResult.
     }
 
     override fun onFinalResult(hypothesis: String?) {
@@ -874,7 +878,6 @@ class BackgroundWakeService : Service(),
     }
 
     override fun onTimeout() {
-        // Continuous listening.
     }
 
     private fun processVoskResult(json: String?) {
@@ -935,9 +938,23 @@ class BackgroundWakeService : Service(),
             return
         }
 
-        if (normalised == "hi" || normalised.startsWith("hi ")) {
+        // SIMMY wake words:
+        // Mamma, Mama, Momma, Hi and Simon.
+        val wakeWords = listOf(
+            "mamma",
+            "mama",
+            "momma",
+            "hi",
+            "simon"
+        )
+
+        val wakeWord = wakeWords.firstOrNull { word ->
+            normalised == word || normalised.startsWith("$word ")
+        }
+
+        if (wakeWord != null) {
             val command = normalised
-                .removePrefix("hi")
+                .removePrefix(wakeWord)
                 .trim()
 
             if (command.isNotBlank()) {
@@ -1609,7 +1626,6 @@ class BackgroundWakeService : Service(),
                     )
                 }
             } catch (_: Exception) {
-                // Continue searching installed apps.
             }
         }
 
@@ -1686,7 +1702,6 @@ class BackgroundWakeService : Service(),
                     startActivity(launchIntent)
                     return
                 } catch (_: Exception) {
-                    // Use notification fallback.
                 }
             }
 

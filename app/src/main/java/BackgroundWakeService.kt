@@ -1,4 +1,3 @@
-
 package com.simmy.assistant
 
 import android.Manifest
@@ -78,6 +77,8 @@ class BackgroundWakeService : Service(),
         private const val URECORDER_PACKAGE =
             "voicerecorder.audiorecorder.voice"
 
+        private const val CONVERSATION_TIMEOUT_MS = 20_000L
+
         @Volatile
         var isRunning = false
     }
@@ -120,6 +121,11 @@ class BackgroundWakeService : Service(),
     private var readyMessageSpoken = false
     private var speaking = false
     private var recoveryScheduled = false
+
+    // CONVERSATION MODE
+
+    private var conversationMode = false
+    private var conversationTimeoutRunnable: Runnable? = null
 
     private var timerRunnable: Runnable? = null
     private var timerEndTimeMillis: Long? = null
@@ -709,6 +715,68 @@ class BackgroundWakeService : Service(),
         )
     }
 
+    // CONVERSATION MODE
+
+    private fun startConversationMode() {
+        conversationMode = true
+        awaitingCommand = false
+        refreshConversationTimeout()
+
+        updateNotification(
+            "Conversation mode active. SIMMY is listening for your next command."
+        )
+    }
+
+    private fun refreshConversationTimeout() {
+        conversationTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+        }
+
+        conversationTimeoutRunnable = Runnable {
+            if (!isRunning || !conversationMode) return@Runnable
+
+            conversationMode = false
+            awaitingCommand = false
+            startOnlineRecognitionAfterSpeech = false
+
+            if (onlineRecognitionActive) {
+                onlineRecognitionActive = false
+                destroyOnlineRecognizer()
+            }
+
+            updateNotification(
+                "Conversation ended. Listening for Mamma, Hi, or Simon."
+            )
+
+            resumeListening()
+        }
+
+        handler.postDelayed(
+            conversationTimeoutRunnable!!,
+            CONVERSATION_TIMEOUT_MS
+        )
+    }
+
+    private fun endConversationMode() {
+        conversationMode = false
+        awaitingCommand = false
+        startOnlineRecognitionAfterSpeech = false
+
+        conversationTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+        }
+        conversationTimeoutRunnable = null
+
+        if (onlineRecognitionActive) {
+            onlineRecognitionActive = false
+            destroyOnlineRecognizer()
+        }
+
+        updateNotification(
+            "Conversation ended. Listening for Mamma, Hi, or Simon."
+        )
+    }
+
     // TEXT TO SPEECH
 
     override fun onInit(status: Int) {
@@ -729,6 +797,15 @@ class BackgroundWakeService : Service(),
 
                             if (startOnlineRecognitionAfterSpeech) {
                                 startOnlineRecognitionAfterSpeech = false
+
+                                if (conversationMode) {
+                                    startOnlineCommandListening()
+                                } else {
+                                    resumeListening()
+                                }
+                            } else if (conversationMode &&
+                                !onlineRecognitionActive
+                            ) {
                                 startOnlineCommandListening()
                             } else if (!onlineRecognitionActive) {
                                 resumeListening()
@@ -742,6 +819,15 @@ class BackgroundWakeService : Service(),
 
                             if (startOnlineRecognitionAfterSpeech) {
                                 startOnlineRecognitionAfterSpeech = false
+
+                                if (conversationMode) {
+                                    startOnlineCommandListening()
+                                } else {
+                                    resumeListening()
+                                }
+                            } else if (conversationMode &&
+                                !onlineRecognitionActive
+                            ) {
                                 startOnlineCommandListening()
                             } else if (!onlineRecognitionActive) {
                                 resumeListening()
@@ -790,12 +876,17 @@ class BackgroundWakeService : Service(),
 
         if (result == TextToSpeech.ERROR) {
             showMessage("SIMMY could not speak. Check phone text-to-speech settings.")
-            resumeListening()
+
+            if (conversationMode) {
+                startOnlineCommandListening()
+            } else {
+                resumeListening()
+            }
         }
     }
 
     private fun resumeListening() {
-        if (!isRunning || onlineRecognitionActive) return
+        if (!isRunning || onlineRecognitionActive || conversationMode) return
 
         try {
             if (speechService == null || !listeningStarted) {
@@ -812,12 +903,12 @@ class BackgroundWakeService : Service(),
     // ONLINE ENGLISH / AFRIKAANS RECOGNITION
 
     private fun startOnlineCommandListening() {
-        if (!isRunning) return
+        if (!isRunning || !conversationMode) return
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             onlineRecognitionActive = false
             awaitingCommand = true
-            speak("Online speech recognition is not available. Please say your command again.")
+            speak("Online speech recognition is not available. Please try again.")
             return
         }
 
@@ -829,7 +920,7 @@ class BackgroundWakeService : Service(),
 
             onlineRecognitionActive = true
             awaitingCommand = false
-            updateNotification("Listening for your command in English or Afrikaans.")
+            updateNotification("Conversation mode: listening for your command.")
 
             onlineSpeechRecognizer?.setRecognitionListener(
                 object : android.speech.RecognitionListener {
@@ -873,8 +964,18 @@ class BackgroundWakeService : Service(),
 
                             if (!command.isNullOrBlank()) {
                                 awaitingCommand = false
+                                refreshConversationTimeout()
                                 updateNotification("SIMMY heard: $command")
-                                executeCommand(normaliseCommand(command))
+
+                                val normalisedCommand =
+                                    normaliseCommand(command)
+
+                                if (awaitingNoteContent) {
+                                    awaitingNoteContent = false
+                                    saveNoteInSamsungNotes(normalisedCommand)
+                                } else {
+                                    executeCommand(normalisedCommand)
+                                }
                             } else {
                                 awaitingCommand = true
                                 speak("I didn't catch that. Please say your command again.")
@@ -956,7 +1057,7 @@ class BackgroundWakeService : Service(),
             onlineRecognitionActive = false
             destroyOnlineRecognizer()
             awaitingCommand = true
-            speak("Online recognition could not start. Please say your command again.")
+            speak("Online recognition could not start. Please try your command again.")
         }
     }
 
@@ -982,7 +1083,7 @@ class BackgroundWakeService : Service(),
             else -> "Online speech recognition is unavailable."
         }
 
-        updateNotification("Online recognition failed. Using offline listening.")
+        updateNotification("Online recognition failed. Please try again.")
         speak("$reason Please say your command again.")
     }
 
@@ -1292,26 +1393,21 @@ class BackgroundWakeService : Service(),
         }
 
         if (wakeWord != null) {
+            startConversationMode()
+
             val command = normalised
                 .removePrefix(wakeWord)
                 .trim()
 
             if (command.isNotBlank()) {
-                awaitingCommand = false
                 executeCommand(command)
             } else {
-                awaitingCommand = false
                 startOnlineRecognitionAfterSpeech = true
                 updateNotification("SIMMY is waiting for your command.")
                 speak("Yes, I'm listening.")
             }
 
             return
-        }
-
-        if (awaitingCommand) {
-            awaitingCommand = false
-            executeCommand(normalised)
         }
     }
 
@@ -1671,7 +1767,6 @@ class BackgroundWakeService : Service(),
 
             speak("I found $song. I'll try to start playback.")
 
-            // Best-effort playback request after the YouTube page opens.
             handler.postDelayed({
                 if (isRunning) {
                     sendMediaKey(KeyEvent.KEYCODE_MEDIA_PLAY)
@@ -1755,14 +1850,12 @@ class BackgroundWakeService : Service(),
 
         val contacts = getPhoneContacts() ?: return null
 
-        // Prefer a full, exact contact-name match.
         contacts.firstOrNull {
             normaliseContactName(it.name) == requested
         }?.let {
             return it
         }
 
-        // Otherwise, choose the closest sensible partial name match.
         val matchingContacts = contacts.filter {
             val contactName = normaliseContactName(it.name)
 
@@ -1802,7 +1895,6 @@ class BackgroundWakeService : Service(),
         try {
             var digits = number.filter { it.isDigit() }
 
-            // Convert a South African local number to international format.
             if (digits.startsWith("0") && digits.length >= 10) {
                 digits = "27" + digits.drop(1)
             }
@@ -1860,16 +1952,25 @@ class BackgroundWakeService : Service(),
                 startVoiceRecording()
             }
 
+            text == "end conversation" ||
+                text == "stop conversation" ||
+                text == "exit conversation" -> {
+                endConversationMode()
+                speak("Conversation ended. Say Mamma or Simon when you need me.")
+            }
+
             text.contains("stop listening") ||
                 text.contains("goodbye") ||
                 text.contains("go to sleep") -> {
+                conversationMode = false
+                conversationTimeoutRunnable?.let {
+                    handler.removeCallbacks(it)
+                }
                 speak("Goodbye.")
                 handler.postDelayed({
                     stopSelf()
                 }, 2000)
             }
-
-            // TIMER REMAINING TIME
 
             text.contains("time left") ||
                 text.contains("time remaining") ||
@@ -1879,8 +1980,6 @@ class BackgroundWakeService : Service(),
                 text.contains("remaining on timer") -> {
                 tellTimerRemaining()
             }
-
-            // MEDIA CONTROLS
 
             text == "pause" ||
                 text.contains("pause music") ||
@@ -1905,8 +2004,6 @@ class BackgroundWakeService : Service(),
                 skipMusic()
             }
 
-            // YOUTUBE MUSIC SEARCH
-
             text.startsWith("play ") &&
                 (text.contains(" on youtube music") ||
                     text.contains(" on youtube")) -> {
@@ -1920,8 +2017,6 @@ class BackgroundWakeService : Service(),
                 val music = text.contains("youtube music")
                 playOnYouTube(song, music)
             }
-
-            // GOOGLE SEARCH
 
             text.startsWith("search google for ") -> {
                 searchGoogle(text.removePrefix("search google for ").trim())
@@ -1943,8 +2038,6 @@ class BackgroundWakeService : Service(),
                 searchGoogle(text.removePrefix("google ").trim())
             }
 
-            // WHATSAPP CONTACT
-
             text.startsWith("whatsapp ") -> {
                 openWhatsAppContact(
                     text.removePrefix("whatsapp ").trim()
@@ -1956,8 +2049,6 @@ class BackgroundWakeService : Service(),
                     text.removePrefix("open whatsapp chat ").trim()
                 )
             }
-
-            // TIMER
 
             text.contains("timer") -> {
                 startTimer(text)
@@ -2326,7 +2417,6 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        // Prefer the longest matching contact name.
         return matches.maxByOrNull {
             normaliseContactName(it.first.name).length
         }
@@ -2614,6 +2704,12 @@ class BackgroundWakeService : Service(),
         onlineRecognitionActive = false
         startOnlineRecognitionAfterSpeech = false
         recoveryScheduled = false
+        conversationMode = false
+
+        conversationTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+        }
+        conversationTimeoutRunnable = null
 
         handler.removeCallbacks(overlayPermissionChecker)
 

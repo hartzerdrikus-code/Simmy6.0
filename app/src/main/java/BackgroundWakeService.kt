@@ -870,8 +870,6 @@ class BackgroundWakeService : Service(),
                     override fun onEvent(eventType: Int, params: Bundle?) {
                     }
 
-                    // Android 14 and newer provide language detection
-                    // through this separate callback.
                     override fun onLanguageDetection(results: Bundle) {
                         if (Build.VERSION.SDK_INT >= 34) {
                             val detectedLanguage = results.getString(
@@ -998,65 +996,90 @@ class BackgroundWakeService : Service(),
             .replace("what s app", "whatsapp")
             .replace("blue tooth", "bluetooth")
 
-        // Common Afrikaans phrases. These are matched as complete
-        // phrases or at the beginning of a command, not inside words.
+        // Remove common polite English introductions.
+        val prefixes = listOf(
+            "can you please ",
+            "could you please ",
+            "would you please ",
+            "will you please ",
+            "please can you ",
+            "please could you ",
+            "can you ",
+            "could you ",
+            "would you ",
+            "will you ",
+            "i want you to ",
+            "i would like you to ",
+            "i need you to ",
+            "i want to ",
+            "i would like to ",
+            "please "
+        )
+
+        for (prefix in prefixes) {
+            if (text.startsWith(prefix)) {
+                text = text.removePrefix(prefix).trim()
+                break
+            }
+        }
+
+        // Common Afrikaans phrases.
         val translations = listOf(
-            "hoe laat is dit" to "what time is it",
             "hoe laat is dit nou" to "what time is it",
-            "wat is die tyd" to "what time is it",
+            "hoe laat is dit" to "what time is it",
             "wat is die tyd nou" to "what time is it",
+            "wat is die tyd" to "what time is it",
             "sê vir my die tyd" to "what time is it",
             "wat is die datum" to "what date is it",
             "watter datum is dit" to "what date is it",
-            "watter dag is dit" to "what date is it",
             "watter dag is dit vandag" to "what date is it",
+            "watter dag is dit" to "what date is it",
             "vandag se datum" to "what date is it",
             "lees my boodskappe" to "read messages",
             "lees die boodskappe" to "read messages",
             "lees boodskappe" to "read messages",
             "lees my messages" to "read messages",
-            "maak n nota" to "make a note",
             "maak n nuwe nota" to "make a note",
-            "maak 'n nota" to "make a note",
+            "maak n nota" to "make a note",
             "maak nota" to "make a note",
             "skryf n nota" to "make a note",
             "skryf nota" to "make a note",
-            "begin opname" to "start recording",
             "begin die opname" to "start recording",
+            "begin opname" to "start recording",
             "neem n opname" to "start recording",
             "neem opname" to "start recording",
             "begin opneem" to "start recording",
-            "hou op luister" to "stop listening",
             "hou op om te luister" to "stop listening",
+            "hou op luister" to "stop listening",
             "gaan slaap" to "go to sleep",
             "tot siens" to "goodbye",
-            "skakel flitslig aan" to "turn flashlight on",
             "skakel die flitslig aan" to "turn flashlight on",
-            "sit flitslig aan" to "turn flashlight on",
+            "skakel flitslig aan" to "turn flashlight on",
             "sit die flitslig aan" to "turn flashlight on",
+            "sit flitslig aan" to "turn flashlight on",
             "skakel flits aan" to "turn flashlight on",
-            "skakel flitslig af" to "turn flashlight off",
             "skakel die flitslig af" to "turn flashlight off",
-            "sit flitslig af" to "turn flashlight off",
+            "skakel flitslig af" to "turn flashlight off",
             "sit die flitslig af" to "turn flashlight off",
+            "sit flitslig af" to "turn flashlight off",
             "skakel flits af" to "turn flashlight off",
-            "volume harder" to "increase volume",
             "maak die volume harder" to "increase volume",
             "sit die volume harder" to "increase volume",
+            "volume harder" to "increase volume",
             "maak harder" to "increase volume",
-            "volume sagter" to "decrease volume",
             "maak die volume sagter" to "decrease volume",
             "sit die volume sagter" to "decrease volume",
+            "volume sagter" to "decrease volume",
             "maak sagter" to "decrease volume",
-            "maak bluetooth oop" to "open bluetooth",
             "maak die bluetooth oop" to "open bluetooth",
+            "maak bluetooth oop" to "open bluetooth",
             "skakel bluetooth aan" to "open bluetooth",
-            "maak wifi oop" to "open wifi",
             "maak die wifi oop" to "open wifi",
-            "maak instellings oop" to "open settings",
+            "maak wifi oop" to "open wifi",
             "maak die instellings oop" to "open settings",
-            "maak kamera oop" to "open camera",
+            "maak instellings oop" to "open settings",
             "maak die kamera oop" to "open camera",
+            "maak kamera oop" to "open camera",
             "maak youtube oop" to "open youtube",
             "maak whatsapp oop" to "open whatsapp",
             "maak facebook oop" to "open facebook",
@@ -1067,9 +1090,7 @@ class BackgroundWakeService : Service(),
             "maak boodskappe oop" to "open messages",
             "maak kontakte oop" to "open contacts",
             "maak gallery oop" to "open gallery",
-            "maak kalender oop" to "open calendar",
-            "bel" to "call",
-            "skakel" to "call"
+            "maak kalender oop" to "open calendar"
         )
 
         for ((afrikaans, english) in translations.sortedByDescending {
@@ -1086,25 +1107,13 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        // "Bel Jan" and "Skakel Jan" become "call Jan".
-        if (text.startsWith("bel ")) {
-            text = "call " + text.removePrefix("bel ").trim()
-        }
+        // Remove common polite words in Afrikaans app-opening requests.
+        text = text
+            .replace("maak asseblief ", "maak ")
+            .replace("maak vir my ", "maak ")
+            .replace("maak die ", "maak ")
 
-        if (text.startsWith("skakel ")) {
-            val rest = text.removePrefix("skakel ").trim()
-
-            if (rest.isNotBlank() &&
-                !rest.startsWith("flitslig") &&
-                !rest.startsWith("die flitslig") &&
-                !rest.startsWith("flits ")
-            ) {
-                text = "call $rest"
-            }
-        }
-
-        // General Afrikaans app-opening patterns:
-        // "maak [app name] oop" becomes "open [app name]".
+        // General Afrikaans app-opening patterns.
         val makeAppOpen = Regex("^maak (.+) oop$")
         val makeOpenApp = Regex("^maak oop (.+)$")
         val openAppAfrikaans = Regex("^open die (.+)$")
@@ -1121,6 +1130,22 @@ class BackgroundWakeService : Service(),
             text = "open ${it.groupValues[1]}"
         }
 
+        // Afrikaans calling commands. Only translate the beginning
+        // of the sentence so unrelated words are not changed.
+        if (text.startsWith("bel ")) {
+            text = "call " + text.removePrefix("bel ").trim()
+        } else if (text.startsWith("skakel ")) {
+            val rest = text.removePrefix("skakel ").trim()
+
+            if (rest.isNotBlank() &&
+                !rest.startsWith("flitslig") &&
+                !rest.startsWith("die flitslig") &&
+                !rest.startsWith("flits ")
+            ) {
+                text = "call $rest"
+            }
+        }
+
         // Common English variations.
         val englishMappings = listOf(
             "tell me the time" to "what time is it",
@@ -1130,8 +1155,7 @@ class BackgroundWakeService : Service(),
             "whats the date" to "what date is it",
             "what is todays date" to "what date is it",
             "open up " to "open ",
-            "launch " to "open ",
-            "start " to "open "
+            "launch " to "open "
         )
 
         for ((phrase, replacement) in englishMappings) {
@@ -1143,6 +1167,21 @@ class BackgroundWakeService : Service(),
             if (text.startsWith(phrase)) {
                 text = replacement + text.removePrefix(phrase)
                 break
+            }
+        }
+
+        // Remove polite endings.
+        val endings = listOf(
+            " for me please",
+            " please",
+            " for me",
+            " thanks",
+            " thank you"
+        )
+
+        for (ending in endings) {
+            if (text.endsWith(ending)) {
+                text = text.removeSuffix(ending).trim()
             }
         }
 
@@ -1523,12 +1562,27 @@ class BackgroundWakeService : Service(),
         val text = normaliseCommand(command)
 
         when {
-            text.contains("make a note") -> {
+            text == "make a note" ||
+                text.startsWith("make a note ") -> {
                 startMakingNote()
             }
 
-            text.contains("start recording") -> {
+            text == "start recording" ||
+                text.startsWith("start recording ") -> {
                 startVoiceRecording()
+            }
+
+            text.contains("stop listening") ||
+                text.contains("goodbye") ||
+                text.contains("go to sleep") -> {
+                speak("Goodbye.")
+                handler.postDelayed({
+                    stopSelf()
+                }, 2000)
+            }
+
+            text.contains("timer") -> {
+                startTimer(text)
             }
 
             text.contains("flashlight") ||
@@ -1608,21 +1662,25 @@ class BackgroundWakeService : Service(),
                 }
             }
 
-            text.contains("settings") -> {
+            text == "settings" ||
+                text == "open settings" -> {
                 speak("Opening settings.")
                 openSettings(Settings.ACTION_SETTINGS)
             }
 
-            text.contains("camera") -> {
+            text == "camera" ||
+                text == "open camera" -> {
                 openNamedApp("camera")
             }
 
-            text.contains("youtube") -> {
+            text == "youtube" ||
+                text == "open youtube" -> {
                 openNamedApp("youtube")
             }
 
-            text.contains("timer") -> {
-                startTimer(text)
+            text == "whatsapp" ||
+                text == "open whatsapp" -> {
+                openNamedApp("whatsapp")
             }
 
             text.startsWith("call ") ||
@@ -1645,21 +1703,8 @@ class BackgroundWakeService : Service(),
                 sendText(details)
             }
 
-            text.contains("whatsapp") -> {
-                openNamedApp("whatsapp")
-            }
-
             text.startsWith("open ") -> {
                 openNamedApp(text.removePrefix("open ").trim())
-            }
-
-            text.contains("stop listening") ||
-                text.contains("goodbye") ||
-                text.contains("go to sleep") -> {
-                speak("Goodbye.")
-                handler.postDelayed({
-                    stopSelf()
-                }, 2000)
             }
 
             else -> {
@@ -1671,20 +1716,61 @@ class BackgroundWakeService : Service(),
     // TIMER
 
     private fun startTimer(command: String) {
-        val number = Regex("\\d+")
+        val numberWords = mapOf(
+            "one" to 1L,
+            "two" to 2L,
+            "three" to 3L,
+            "four" to 4L,
+            "five" to 5L,
+            "six" to 6L,
+            "seven" to 7L,
+            "eight" to 8L,
+            "nine" to 9L,
+            "ten" to 10L,
+            "eleven" to 11L,
+            "twelve" to 12L,
+            "thirteen" to 13L,
+            "fourteen" to 14L,
+            "fifteen" to 15L,
+            "sixteen" to 16L,
+            "seventeen" to 17L,
+            "eighteen" to 18L,
+            "nineteen" to 19L,
+            "twenty" to 20L,
+            "thirty" to 30L,
+            "forty" to 40L,
+            "fifty" to 50L,
+            "sixty" to 60L
+        )
+
+        val digitNumber = Regex("""\b\d+\b""")
             .find(command)
             ?.value
             ?.toLongOrNull()
 
+        val spokenNumber = numberWords.entries
+            .firstOrNull { (word, _) ->
+                Regex("""\b${Regex.escape(word)}\b""")
+                    .containsMatchIn(command)
+            }
+            ?.value
+
+        val number = digitNumber ?: spokenNumber
+
         if (number == null || number <= 0) {
-            speak("Please tell me how many minutes.")
+            speak("Please tell me how long to set the timer, for example ten minutes.")
             return
         }
 
         val seconds = when {
             command.contains("second") -> number
-            command.contains("hour") -> number * 3600
-            else -> number * 60
+            command.contains("hour") -> number * 3600L
+            else -> number * 60L
+        }
+
+        if (seconds <= 0 || seconds > 604800L) {
+            speak("Please choose a timer of seven days or less.")
+            return
         }
 
         timerRunnable?.let {
@@ -1692,10 +1778,13 @@ class BackgroundWakeService : Service(),
         }
 
         timerRunnable = Runnable {
-            if (isRunning) speak("Your timer is finished.")
+            if (isRunning) {
+                timerRunnable = null
+                speak("Your timer is finished.")
+            }
         }
 
-        handler.postDelayed(timerRunnable!!, seconds * 1000)
+        handler.postDelayed(timerRunnable!!, seconds * 1000L)
         speak("Timer started.")
     }
 
@@ -2041,6 +2130,7 @@ class BackgroundWakeService : Service(),
         timerRunnable?.let {
             handler.removeCallbacks(it)
         }
+        timerRunnable = null
 
         removeSimmyOverlay()
         handler.removeCallbacksAndMessages(null)

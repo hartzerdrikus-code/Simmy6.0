@@ -1,4 +1,3 @@
-
 package com.simmy.assistant
 
 import android.Manifest
@@ -996,32 +995,25 @@ class BackgroundWakeService : Service(),
             .replace("what s app", "whatsapp")
             .replace("blue tooth", "bluetooth")
 
-        // Remove common polite English introductions.
+        // Remove repeated polite introductions without changing the command itself.
         val prefixes = listOf(
-            "can you please ",
-            "could you please ",
-            "would you please ",
-            "will you please ",
-            "please can you ",
-            "please could you ",
-            "can you ",
-            "could you ",
-            "would you ",
-            "will you ",
-            "i want you to ",
-            "i would like you to ",
-            "i need you to ",
-            "i want to ",
-            "i would like to ",
-            "please "
+            "can you please ", "could you please ", "would you please ",
+            "will you please ", "please can you ", "please could you ",
+            "can you ", "could you ", "would you ", "will you ",
+            "i want you to ", "i would like you to ", "i need you to ",
+            "i want to ", "i would like to ", "please "
         )
-
-        for (prefix in prefixes) {
-            if (text.startsWith(prefix)) {
-                text = text.removePrefix(prefix).trim()
-                break
+        var removedPrefix: Boolean
+        do {
+            removedPrefix = false
+            for (prefix in prefixes) {
+                if (text.startsWith(prefix)) {
+                    text = text.removePrefix(prefix).trim()
+                    removedPrefix = true
+                    break
+                }
             }
-        }
+        } while (removedPrefix)
 
         // Common Afrikaans phrases.
         val translations = listOf(
@@ -1093,50 +1085,38 @@ class BackgroundWakeService : Service(),
             "maak kalender oop" to "open calendar"
         )
 
-        for ((afrikaans, english) in translations.sortedByDescending {
-            it.first.length
-        }) {
+        for ((afrikaans, english) in translations.sortedByDescending { it.first.length }) {
             if (text == afrikaans) {
                 text = english
                 break
             }
-
             if (text.startsWith("$afrikaans ")) {
                 text = english + text.removePrefix(afrikaans)
                 break
             }
         }
 
-        // Remove common polite words in Afrikaans app-opening requests.
+        // General Afrikaans app-opening patterns.
         text = text
             .replace("maak asseblief ", "maak ")
             .replace("maak vir my ", "maak ")
             .replace("maak die ", "maak ")
 
-        // General Afrikaans app-opening patterns.
-        val makeAppOpen = Regex("^maak (.+) oop$")
-        val makeOpenApp = Regex("^maak oop (.+)$")
-        val openAppAfrikaans = Regex("^open die (.+)$")
-
-        makeAppOpen.find(text)?.let {
+        Regex("^maak (.+) oop$").find(text)?.let {
+            text = "open ${it.groupValues[1]}"
+        }
+        Regex("^maak oop (.+)$").find(text)?.let {
+            text = "open ${it.groupValues[1]}"
+        }
+        Regex("^open die (.+)$").find(text)?.let {
             text = "open ${it.groupValues[1]}"
         }
 
-        makeOpenApp.find(text)?.let {
-            text = "open ${it.groupValues[1]}"
-        }
-
-        openAppAfrikaans.find(text)?.let {
-            text = "open ${it.groupValues[1]}"
-        }
-
-        // Afrikaans calling commands. Only translate the beginning
-        // of the sentence so unrelated words are not changed.
+        // Afrikaans call requests: only translate the first word.
         if (text.startsWith("bel ")) {
             text = "call " + text.removePrefix("bel ").trim()
         } else if (text.startsWith("skakel ")) {
             val rest = text.removePrefix("skakel ").trim()
-
             if (rest.isNotBlank() &&
                 !rest.startsWith("flitslig") &&
                 !rest.startsWith("die flitslig") &&
@@ -1157,33 +1137,37 @@ class BackgroundWakeService : Service(),
             "open up " to "open ",
             "launch " to "open "
         )
-
         for ((phrase, replacement) in englishMappings) {
             if (text == phrase.trim()) {
                 text = replacement.trim()
                 break
             }
-
             if (text.startsWith(phrase)) {
                 text = replacement + text.removePrefix(phrase)
                 break
             }
         }
 
-        // Remove polite endings.
-        val endings = listOf(
-            " for me please",
-            " please",
-            " for me",
-            " thanks",
-            " thank you"
-        )
+        // Natural variations such as "open the YouTube app".
+        text = text
+            .replace(Regex("^open the "), "open ")
+            .replace(Regex("^open my "), "open ")
 
-        for (ending in endings) {
-            if (text.endsWith(ending)) {
-                text = text.removeSuffix(ending).trim()
+        val endings = listOf(
+            " for me please", " please", " for me",
+            " thanks", " thank you"
+        )
+        var removedEnding: Boolean
+        do {
+            removedEnding = false
+            for (ending in endings) {
+                if (text.endsWith(ending)) {
+                    text = text.removeSuffix(ending).trim()
+                    removedEnding = true
+                    break
+                }
             }
-        }
+        } while (removedEnding)
 
         return text.replace(Regex("\\s+"), " ").trim()
     }
@@ -1715,67 +1699,98 @@ class BackgroundWakeService : Service(),
 
     // TIMER
 
-    private fun startTimer(command: String) {
-        val numberWords = mapOf(
-            "one" to 1L,
-            "two" to 2L,
-            "three" to 3L,
-            "four" to 4L,
-            "five" to 5L,
-            "six" to 6L,
-            "seven" to 7L,
-            "eight" to 8L,
-            "nine" to 9L,
-            "ten" to 10L,
-            "eleven" to 11L,
-            "twelve" to 12L,
-            "thirteen" to 13L,
-            "fourteen" to 14L,
-            "fifteen" to 15L,
-            "sixteen" to 16L,
-            "seventeen" to 17L,
-            "eighteen" to 18L,
-            "nineteen" to 19L,
-            "twenty" to 20L,
-            "thirty" to 30L,
-            "forty" to 40L,
-            "fifty" to 50L,
-            "sixty" to 60L
+    private fun parseTimerNumber(value: String): Long? {
+        val words = value.replace("-", " ").trim().split(Regex("\\s+"))
+        if (words.isEmpty()) return null
+
+        val smallNumbers = mapOf(
+            "zero" to 0L, "one" to 1L, "two" to 2L, "three" to 3L,
+            "four" to 4L, "five" to 5L, "six" to 6L, "seven" to 7L,
+            "eight" to 8L, "nine" to 9L, "ten" to 10L,
+            "eleven" to 11L, "twelve" to 12L, "thirteen" to 13L,
+            "fourteen" to 14L, "fifteen" to 15L, "sixteen" to 16L,
+            "seventeen" to 17L, "eighteen" to 18L, "nineteen" to 19L
+        )
+        val tens = mapOf(
+            "twenty" to 20L, "thirty" to 30L, "forty" to 40L,
+            "fifty" to 50L, "sixty" to 60L, "seventy" to 70L,
+            "eighty" to 80L, "ninety" to 90L
         )
 
-        val digitNumber = Regex("""\b\d+\b""")
-            .find(command)
-            ?.value
-            ?.toLongOrNull()
+        if (words.size == 1) {
+            words[0].toLongOrNull()?.let { return it }
+            return smallNumbers[words[0]] ?: tens[words[0]]
+        }
 
-        val spokenNumber = numberWords.entries
-            .firstOrNull { (word, _) ->
-                Regex("""\b${Regex.escape(word)}\b""")
-                    .containsMatchIn(command)
+        if (words.size == 2 && words[0] in tens) {
+            return tens[words[0]]!! + (smallNumbers[words[1]] ?: return null)
+        }
+
+        return null
+    }
+
+    private fun startTimer(command: String) {
+        val numberPattern =
+            "(\\d+|zero|one|two|three|four|five|six|seven|eight|nine|ten|" +
+                "eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|" +
+                "eighteen|nineteen|twenty|thirty|forty|fifty|sixty|seventy|" +
+                "eighty|ninety)(?:[ -](?:one|two|three|four|five|six|seven|" +
+                "eight|nine))?"
+
+        val timePattern = Regex(
+            "\\b($numberPattern)\\s*(seconds?|secs?|minutes?|mins?|hours?|hrs?)\\b"
+        )
+
+        var totalSeconds = 0L
+        var foundDuration = false
+
+        for (match in timePattern.findAll(command)) {
+            val amount = parseTimerNumber(match.groupValues[1]) ?: continue
+            val unit = match.groupValues.last().lowercase(Locale.ROOT)
+            val multiplier = when {
+                unit.startsWith("hour") || unit.startsWith("hr") -> 3600L
+                unit.startsWith("second") || unit.startsWith("sec") -> 1L
+                else -> 60L
             }
-            ?.value
 
-        val number = digitNumber ?: spokenNumber
+            if (amount > 604800L / multiplier) {
+                speak("Please choose a timer of seven days or less.")
+                return
+            }
 
-        if (number == null || number <= 0) {
-            speak("Please tell me how long to set the timer, for example ten minutes.")
+            totalSeconds += amount * multiplier
+            foundDuration = true
+            if (totalSeconds > 604800L) {
+                speak("Please choose a timer of seven days or less.")
+                return
+            }
+        }
+
+        // Also accept a simple number followed by "timer" as minutes.
+        if (!foundDuration) {
+            val simpleNumber = Regex("\\b\\d+\\b")
+                .find(command)?.value?.toLongOrNull()
+            if (simpleNumber != null) {
+                if (simpleNumber > 604800L / 60L) {
+                    speak("Please choose a timer of seven days or less.")
+                    return
+                }
+                totalSeconds = simpleNumber * 60L
+                foundDuration = true
+            }
+        }
+
+        if (!foundDuration || totalSeconds <= 0L) {
+            speak("Please tell me how long to set the timer, for example ten minutes or one minute thirty seconds.")
             return
         }
 
-        val seconds = when {
-            command.contains("second") -> number
-            command.contains("hour") -> number * 3600L
-            else -> number * 60L
-        }
-
-        if (seconds <= 0 || seconds > 604800L) {
+        if (totalSeconds > 604800L) {
             speak("Please choose a timer of seven days or less.")
             return
         }
 
-        timerRunnable?.let {
-            handler.removeCallbacks(it)
-        }
+        timerRunnable?.let { handler.removeCallbacks(it) }
 
         timerRunnable = Runnable {
             if (isRunning) {
@@ -1784,7 +1799,7 @@ class BackgroundWakeService : Service(),
             }
         }
 
-        handler.postDelayed(timerRunnable!!, seconds * 1000L)
+        handler.postDelayed(timerRunnable!!, totalSeconds * 1000L)
         speak("Timer started.")
     }
 

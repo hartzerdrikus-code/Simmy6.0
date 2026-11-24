@@ -1,3 +1,4 @@
+
 package com.simmy.assistant
 
 import android.Manifest
@@ -77,6 +78,8 @@ class BackgroundWakeService : Service(),
         private const val URECORDER_PACKAGE =
             "voicerecorder.audiorecorder.voice"
 
+        private const val CHATGPT_PACKAGE = "com.openai.chatgpt"
+
         private const val CONVERSATION_TIMEOUT_MS = 20_000L
 
         @Volatile
@@ -124,6 +127,11 @@ class BackgroundWakeService : Service(),
 
     private var conversationMode = false
     private var conversationTimeoutRunnable: Runnable? = null
+
+    // CHATGPT VOICE MODE
+    private var chatGptMode = false
+    private var awaitingChatGptQuestion = false
+    private var waitingForChatGptAnswer = false
 
     private var timerRunnable: Runnable? = null
     private var timerEndTimeMillis: Long? = null
@@ -676,11 +684,6 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    /*
-     * IMPORTANT:
-     * Stop and release Vosk completely before Google recognition starts.
-     * Pausing Vosk alone may leave its microphone recorder active.
-     */
     private fun stopVoskListening() {
         listeningStarted = false
 
@@ -765,6 +768,12 @@ class BackgroundWakeService : Service(),
             handler.removeCallbacks(it)
         }
 
+        // ChatGPT mode stays active while the user reads the answer.
+        if (chatGptMode) {
+            conversationTimeoutRunnable = null
+            return
+        }
+
         conversationTimeoutRunnable = Runnable {
             if (!isRunning || !conversationMode) return@Runnable
 
@@ -795,6 +804,10 @@ class BackgroundWakeService : Service(),
         awaitingCommand = false
         startOnlineRecognitionAfterSpeech = false
 
+        chatGptMode = false
+        awaitingChatGptQuestion = false
+        waitingForChatGptAnswer = false
+
         conversationTimeoutRunnable?.let {
             handler.removeCallbacks(it)
         }
@@ -808,6 +821,172 @@ class BackgroundWakeService : Service(),
         updateNotification(
             "Conversation ended. Listening for Mamma, Hi, or Simon."
         )
+    }
+
+    // CHATGPT VOICE INTEGRATION
+
+    private fun openChatGPTForVoiceQuestion() {
+        val launchIntent =
+            packageManager.getLaunchIntentForPackage(CHATGPT_PACKAGE)
+
+        if (launchIntent == null) {
+            showMessage("ChatGPT is not installed or cannot be opened.")
+            return
+        }
+
+        chatGptMode = true
+        awaitingChatGptQuestion = true
+        waitingForChatGptAnswer = false
+        conversationMode = true
+        awaitingCommand = false
+
+        conversationTimeoutRunnable?.let {
+            handler.removeCallbacks(it)
+        }
+        conversationTimeoutRunnable = null
+
+        try {
+            launchIntent.addFlags(
+                Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_RESET_TASK_IF_NEEDED
+            )
+
+            startActivity(launchIntent)
+
+            // No SIMMY voice response here, as requested.
+            updateNotification(
+                "ChatGPT opened. SIMMY is preparing to hear your question."
+            )
+
+            handler.postDelayed({
+                if (isRunning && chatGptMode && awaitingChatGptQuestion) {
+                    startOnlineCommandListening()
+                }
+            }, 1800)
+
+        } catch (_: Exception) {
+            chatGptMode = false
+            awaitingChatGptQuestion = false
+            waitingForChatGptAnswer = false
+            conversationMode = false
+
+            showMessage("SIMMY could not open ChatGPT.")
+            resumeListening()
+        }
+    }
+
+    private fun sendQuestionToChatGPT(question: String) {
+        if (question.isBlank()) {
+            handler.postDelayed({
+                if (isRunning && chatGptMode) {
+                    startOnlineCommandListening()
+                }
+            }, 800)
+            return
+        }
+
+        updateNotification("SIMMY is sending your question to ChatGPT.")
+
+        handler.postDelayed({
+            if (!isRunning || !chatGptMode) return@postDelayed
+
+            val accessibilityService =
+                ChatGPTAccessibilityService.instance
+
+            if (accessibilityService == null) {
+                chatGptMode = false
+                awaitingChatGptQuestion = false
+                waitingForChatGptAnswer = false
+                conversationMode = false
+
+                showMessage(
+                    "Please enable SIMMY ChatGPT Control in Android Accessibility settings."
+                )
+
+                endConversationMode()
+                resumeListening()
+                return@postDelayed
+            }
+
+            val sent = try {
+                accessibilityService.sendMessage(question)
+            } catch (_: Exception) {
+                false
+            }
+
+            if (sent) {
+                awaitingChatGptQuestion = false
+                waitingForChatGptAnswer = true
+
+                updateNotification(
+                    "Question sent. Wait for ChatGPT, then say: Read it back to me."
+                )
+
+                // Give ChatGPT time to display the response.
+                handler.postDelayed({
+                    if (isRunning &&
+                        chatGptMode &&
+                        waitingForChatGptAnswer
+                    ) {
+                        startOnlineCommandListening()
+                    }
+                }, 3500)
+
+            } else {
+                awaitingChatGptQuestion = false
+                waitingForChatGptAnswer = true
+
+                updateNotification(
+                    "ChatGPT is open, but SIMMY could not send the question."
+                )
+
+                showMessage(
+                    "SIMMY could not enter your question. Check that ChatGPT is open and ready."
+                )
+
+                handler.postDelayed({
+                    if (isRunning &&
+                        chatGptMode &&
+                        waitingForChatGptAnswer
+                    ) {
+                        startOnlineCommandListening()
+                    }
+                }, 1500)
+            }
+        }, 700)
+    }
+
+    private fun readChatGPTAnswer() {
+        updateNotification("SIMMY is reading the ChatGPT screen.")
+
+        val answer = try {
+            ChatGPTAccessibilityService.instance
+                ?.readVisibleText()
+                .orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+
+        if (answer.isBlank()) {
+            showMessage(
+                "I cannot see ChatGPT's answer yet. Wait until it finishes and try again."
+            )
+
+            handler.postDelayed({
+                if (isRunning &&
+                    chatGptMode &&
+                    waitingForChatGptAnswer
+                ) {
+                    startOnlineCommandListening()
+                }
+            }, 1000)
+
+            return
+        }
+
+        // End ChatGPT mode before speaking, so SIMMY returns to Vosk afterwards.
+        endConversationMode()
+        speak(answer)
     }
 
     // TEXT TO SPEECH
@@ -1037,10 +1216,18 @@ class BackgroundWakeService : Service(),
 
     private fun startOnlineCommandListening() {
         if (!isRunning || !conversationMode) return
+        if (onlineRecognitionActive || speaking) return
 
         if (!SpeechRecognizer.isRecognitionAvailable(this)) {
             onlineRecognitionActive = false
             awaitingCommand = false
+
+            if (chatGptMode) {
+                updateNotification(
+                    "Speech recognition unavailable. ChatGPT mode is waiting."
+                )
+                return
+            }
 
             updateNotification(
                 "Online recognition unavailable. Say Mamma to try again."
@@ -1052,16 +1239,10 @@ class BackgroundWakeService : Service(),
         }
 
         try {
-            /*
-             * Mark online recognition active BEFORE stopping Vosk.
-             * This prevents Vosk shutdown callbacks from starting recovery.
-             */
             onlineRecognitionActive = true
             awaitingCommand = false
 
-            // Release Vosk's microphone before Google takes over.
             stopVoskListening()
-
             destroyOnlineRecognizer()
 
             onlineSpeechRecognizer =
@@ -1122,22 +1303,79 @@ class BackgroundWakeService : Service(),
 
                             if (!command.isNullOrBlank()) {
                                 awaitingCommand = false
-                                refreshConversationTimeout()
+
+                                if (!chatGptMode) {
+                                    refreshConversationTimeout()
+                                }
+
                                 updateNotification("SIMMY heard: $command")
 
                                 val normalisedCommand =
                                     normaliseCommand(command)
 
-                                if (awaitingNoteContent) {
-                                    awaitingNoteContent = false
-                                    saveNoteInSamsungNotes(normalisedCommand)
-                                } else {
-                                    executeCommand(normalisedCommand)
+                                when {
+                                    awaitingNoteContent -> {
+                                        awaitingNoteContent = false
+                                        saveNoteInSamsungNotes(normalisedCommand)
+                                    }
+
+                                    chatGptMode && awaitingChatGptQuestion -> {
+                                        // Keep the spoken question as close to the original as possible.
+                                        sendQuestionToChatGPT(command.trim())
+                                    }
+
+                                    chatGptMode && waitingForChatGptAnswer &&
+                                        (
+                                            normalisedCommand.contains("read it back") ||
+                                                normalisedCommand.contains("read it to me") ||
+                                                normalisedCommand.contains("read the answer") ||
+                                                normalisedCommand == "read answer"
+                                            ) -> {
+                                        readChatGPTAnswer()
+                                    }
+
+                                    chatGptMode && waitingForChatGptAnswer &&
+                                        (
+                                            normalisedCommand.contains("stop listening") ||
+                                                normalisedCommand.contains("exit chatgpt") ||
+                                                normalisedCommand.contains("close chatgpt")
+                                            ) -> {
+                                        endConversationMode()
+                                        resumeListening()
+                                    }
+
+                                    chatGptMode && waitingForChatGptAnswer -> {
+                                        updateNotification(
+                                            "ChatGPT is open. Say: Read it back to me."
+                                        )
+
+                                        handler.postDelayed({
+                                            if (isRunning &&
+                                                chatGptMode &&
+                                                waitingForChatGptAnswer
+                                            ) {
+                                                startOnlineCommandListening()
+                                            }
+                                        }, 800)
+                                    }
+
+                                    else -> {
+                                        executeCommand(normalisedCommand)
+                                    }
                                 }
                             } else {
                                 awaitingCommand = false
-                                endConversationMode()
-                                resumeListening()
+
+                                if (chatGptMode) {
+                                    handler.postDelayed({
+                                        if (isRunning && chatGptMode) {
+                                            startOnlineCommandListening()
+                                        }
+                                    }, 800)
+                                } else {
+                                    endConversationMode()
+                                    resumeListening()
+                                }
                             }
                         }
                     }
@@ -1222,6 +1460,19 @@ class BackgroundWakeService : Service(),
             destroyOnlineRecognizer()
             awaitingCommand = false
 
+            if (chatGptMode) {
+                updateNotification(
+                    "ChatGPT mode is active. SIMMY will try listening again."
+                )
+
+                handler.postDelayed({
+                    if (isRunning && chatGptMode) {
+                        startOnlineCommandListening()
+                    }
+                }, 1500)
+                return
+            }
+
             updateNotification(
                 "Online recognition could not start. Say Mamma to try again."
             )
@@ -1237,6 +1488,20 @@ class BackgroundWakeService : Service(),
         onlineRecognitionActive = false
         destroyOnlineRecognizer()
         awaitingCommand = false
+
+        if (chatGptMode) {
+            updateNotification(
+                "ChatGPT mode is active. SIMMY is listening again."
+            )
+
+            handler.postDelayed({
+                if (isRunning && chatGptMode) {
+                    startOnlineCommandListening()
+                }
+            }, 1200)
+
+            return
+        }
 
         updateNotification(
             "Listening stopped. Say Mamma, Hi, or Simon to try again."
@@ -1537,6 +1802,15 @@ class BackgroundWakeService : Service(),
         val normalised = normaliseCommand(words)
 
         if (normalised.isBlank()) return
+
+        // Ask ChatGPT works without saying Mamma first.
+        if (normalised == "ask chatgpt" ||
+            normalised == "ask chat gpt" ||
+            normalised == "ask chat g p t" ||
+            normalised == "ask chat g p t") {
+            openChatGPTForVoiceQuestion()
+            return
+        }
 
         updateNotification("SIMMY heard: $normalised")
 
@@ -2569,8 +2843,6 @@ class BackgroundWakeService : Service(),
         }
     }
 
-    // MATCH A FULL CONTACT NAME AT THE START OF AN SMS REQUEST
-
     private fun findContactAndMessage(
         details: String
     ): Pair<ContactMatch, String>? {
@@ -2724,7 +2996,8 @@ class BackgroundWakeService : Service(),
             "calendar" to "com.samsung.android.calendar",
             "my files" to "com.sec.android.app.myfiles",
             "files" to "com.sec.android.app.myfiles",
-            "camera" to "com.sec.android.app.camera"
+            "camera" to "com.sec.android.app.camera",
+            "chatgpt" to CHATGPT_PACKAGE
         )
     }
 
@@ -2900,6 +3173,10 @@ class BackgroundWakeService : Service(),
         startOnlineRecognitionAfterSpeech = false
         recoveryScheduled = false
         conversationMode = false
+
+        chatGptMode = false
+        awaitingChatGptQuestion = false
+        waitingForChatGptAnswer = false
 
         conversationTimeoutRunnable?.let {
             handler.removeCallbacks(it)

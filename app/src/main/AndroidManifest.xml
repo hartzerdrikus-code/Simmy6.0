@@ -20,11 +20,9 @@
 
     <!-- Bluetooth -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
-
     <uses-permission
         android:name="android.permission.BLUETOOTH"
         android:maxSdkVersion="30" />
-
     <uses-permission
         android:name="android.permission.BLUETOOTH_ADMIN"
         android:maxSdkVersion="30" />
@@ -67,6 +65,23 @@
             android:exported="false"
             android:stopWithTask="false"
             android:foregroundServiceType="microphone" />
+
+        <!-- ChatGPT Accessibility Service -->
+        <service
+            android:name=".ChatGPTAccessibilityService"
+            android:label="SIMMY ChatGPT Control"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/simmy_accessibility_service" />
+
+        </service>
 
         <!-- Notification reader -->
         <service

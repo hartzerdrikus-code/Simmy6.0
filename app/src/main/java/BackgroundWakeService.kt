@@ -676,6 +676,34 @@ class BackgroundWakeService : Service(),
         }
     }
 
+    /*
+     * IMPORTANT:
+     * Stop and release Vosk completely before Google recognition starts.
+     * Pausing Vosk alone may leave its microphone recorder active.
+     */
+    private fun stopVoskListening() {
+        listeningStarted = false
+
+        try {
+            speechService?.cancel()
+        } catch (_: Exception) {
+        }
+
+        try {
+            speechService?.shutdown()
+        } catch (_: Exception) {
+        }
+
+        speechService = null
+
+        try {
+            recognizer?.close()
+        } catch (_: Exception) {
+        }
+
+        recognizer = null
+    }
+
     private fun scheduleVoskRecovery() {
         if (!isRunning ||
             onlineRecognitionActive ||
@@ -698,13 +726,7 @@ class BackgroundWakeService : Service(),
             ) return@postDelayed
 
             try {
-                speechService?.cancel()
-                speechService?.shutdown()
-                speechService = null
-
-                recognizer?.close()
-                recognizer = null
-
+                stopVoskListening()
                 startVoskListening()
             } catch (e: Exception) {
                 showMessage("SIMMY is trying to restart listening.")
@@ -873,7 +895,7 @@ class BackgroundWakeService : Service(),
     private fun personaliseSpeech(message: String): String {
         return when (message.trim()) {
             "Yes, I'm listening." ->
-                "Yes, boss! I'm all ears. Go on!"
+                "Yes, boss!"
 
             "Goodbye." ->
                 "See you later, boss! Try not to miss me too much."
@@ -1010,6 +1032,7 @@ class BackgroundWakeService : Service(),
             scheduleVoskRecovery()
         }
     }
+
     // ONLINE ENGLISH / AFRIKAANS RECOGNITION
 
     private fun startOnlineCommandListening() {
@@ -1029,19 +1052,30 @@ class BackgroundWakeService : Service(),
         }
 
         try {
-            speechService?.setPause(true)
-
-            destroyOnlineRecognizer()
-            onlineSpeechRecognizer = SpeechRecognizer.createSpeechRecognizer(this)
-
+            /*
+             * Mark online recognition active BEFORE stopping Vosk.
+             * This prevents Vosk shutdown callbacks from starting recovery.
+             */
             onlineRecognitionActive = true
             awaitingCommand = false
-            updateNotification("Conversation mode: listening for your command.")
+
+            // Release Vosk's microphone before Google takes over.
+            stopVoskListening()
+
+            destroyOnlineRecognizer()
+
+            onlineSpeechRecognizer =
+                SpeechRecognizer.createSpeechRecognizer(this)
+
+            updateNotification(
+                "Conversation mode: preparing to listen."
+            )
 
             onlineSpeechRecognizer?.setRecognitionListener(
                 object : android.speech.RecognitionListener {
 
                     override fun onReadyForSpeech(params: Bundle?) {
+                        if (!onlineRecognitionActive) return
                         updateNotification("SIMMY is listening to your command.")
                     }
 
@@ -1055,6 +1089,7 @@ class BackgroundWakeService : Service(),
                     }
 
                     override fun onEndOfSpeech() {
+                        if (!onlineRecognitionActive) return
                         updateNotification("SIMMY is understanding your command.")
                     }
 
@@ -1066,12 +1101,14 @@ class BackgroundWakeService : Service(),
 
                     override fun onResults(results: Bundle?) {
                         handler.post {
+                            if (!onlineRecognitionActive || !isRunning) {
+                                return@post
+                            }
+
                             val matches = results?.getStringArrayList(
                                 SpeechRecognizer.RESULTS_RECOGNITION
                             )
 
-                            // Check every returned result for a music command.
-                            // This helps when the first result is incorrect.
                             val command = matches
                                 ?.map { it.trim().lowercase(Locale.ROOT) }
                                 ?.firstOrNull { it.startsWith("play ") }
@@ -1134,14 +1171,19 @@ class BackgroundWakeService : Service(),
                 }
             )
 
-            val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            val intent = Intent(
+                RecognizerIntent.ACTION_RECOGNIZE_SPEECH
+            ).apply {
                 putExtra(
                     RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                     RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
                 )
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE, ONLINE_LANGUAGE)
                 putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, ONLINE_LANGUAGE)
-                putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, false)
+                putExtra(
+                    RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE,
+                    false
+                )
                 putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
                 putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
                 putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 5)
@@ -1196,8 +1238,6 @@ class BackgroundWakeService : Service(),
         destroyOnlineRecognizer()
         awaitingCommand = false
 
-        // Do not speak another error message.
-        // Return directly to offline wake-word listening.
         updateNotification(
             "Listening stopped. Say Mamma, Hi, or Simon to try again."
         )
@@ -1209,6 +1249,10 @@ class BackgroundWakeService : Service(),
     private fun destroyOnlineRecognizer() {
         try {
             onlineSpeechRecognizer?.cancel()
+        } catch (_: Exception) {
+        }
+
+        try {
             onlineSpeechRecognizer?.destroy()
         } catch (_: Exception) {
         }
@@ -1241,6 +1285,7 @@ class BackgroundWakeService : Service(),
             "i want you to ", "i would like you to ", "i need you to ",
             "i want to ", "i would like to ", "please "
         )
+
         var removedPrefix: Boolean
         do {
             removedPrefix = false
@@ -1322,11 +1367,14 @@ class BackgroundWakeService : Service(),
             "maak kalender oop" to "open calendar"
         )
 
-        for ((afrikaans, english) in translations.sortedByDescending { it.first.length }) {
+        for ((afrikaans, english) in translations.sortedByDescending {
+            it.first.length
+        }) {
             if (text == afrikaans) {
                 text = english
                 break
             }
+
             if (text.startsWith("$afrikaans ")) {
                 text = english + text.removePrefix(afrikaans)
                 break
@@ -1341,9 +1389,11 @@ class BackgroundWakeService : Service(),
         Regex("^maak (.+) oop$").find(text)?.let {
             text = "open ${it.groupValues[1]}"
         }
+
         Regex("^maak oop (.+)$").find(text)?.let {
             text = "open ${it.groupValues[1]}"
         }
+
         Regex("^open die (.+)$").find(text)?.let {
             text = "open ${it.groupValues[1]}"
         }
@@ -1352,6 +1402,7 @@ class BackgroundWakeService : Service(),
             text = "call " + text.removePrefix("bel ").trim()
         } else if (text.startsWith("skakel ")) {
             val rest = text.removePrefix("skakel ").trim()
+
             if (rest.isNotBlank() &&
                 !rest.startsWith("flitslig") &&
                 !rest.startsWith("die flitslig") &&
@@ -1371,11 +1422,13 @@ class BackgroundWakeService : Service(),
             "open up " to "open ",
             "launch " to "open "
         )
+
         for ((phrase, replacement) in englishMappings) {
             if (text == phrase.trim()) {
                 text = replacement.trim()
                 break
             }
+
             if (text.startsWith(phrase)) {
                 text = replacement + text.removePrefix(phrase)
                 break
@@ -1390,9 +1443,11 @@ class BackgroundWakeService : Service(),
             " for me please", " please", " for me",
             " thanks", " thank you"
         )
+
         var removedEnding: Boolean
         do {
             removedEnding = false
+
             for (ending in endings) {
                 if (text.endsWith(ending)) {
                     text = text.removeSuffix(ending).trim()
@@ -1429,13 +1484,18 @@ class BackgroundWakeService : Service(),
     }
 
     override fun onError(exception: Exception?) {
+        if (!isRunning || onlineRecognitionActive) return
+
         showMessage("SIMMY microphone error. Restarting listening...")
+
         handler.post {
             scheduleVoskRecovery()
         }
     }
 
     override fun onTimeout() {
+        if (!isRunning || onlineRecognitionActive) return
+
         handler.post {
             scheduleVoskRecovery()
         }
@@ -1459,6 +1519,7 @@ class BackgroundWakeService : Service(),
             if (!isRunning || onlineRecognitionActive) return@post
 
             val now = System.currentTimeMillis()
+
             if (words == lastProcessedText &&
                 now - lastProcessedTime < 1800
             ) return@post
@@ -1568,6 +1629,7 @@ class BackgroundWakeService : Service(),
                     noteIntent,
                     8101
                 )
+
                 speak("Your note is ready. Tap the notification to open Samsung Notes.")
             }
         } catch (_: Exception) {
@@ -1609,6 +1671,7 @@ class BackgroundWakeService : Service(),
                     launchIntent,
                     8102
                 )
+
                 speak("Voice Recorder is ready. Tap the notification to open it.")
             }
         } catch (_: Exception) {
@@ -1618,6 +1681,7 @@ class BackgroundWakeService : Service(),
                 launchIntent,
                 8102
             )
+
             speak("Please tap the notification to open Voice Recorder.")
         }
     }
@@ -1637,10 +1701,12 @@ class BackgroundWakeService : Service(),
                 ).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
+
                 startActivity(intent)
             } catch (_: Exception) {
                 showMessage("Open SIMMY app permissions in phone settings.")
             }
+
             return
         }
 
@@ -1713,10 +1779,12 @@ class BackgroundWakeService : Service(),
                 ).apply {
                     flags = Intent.FLAG_ACTIVITY_NEW_TASK
                 }
+
                 startActivity(intent)
             } catch (_: Exception) {
                 showMessage("Allow Modify system settings for SIMMY in phone settings.")
             }
+
             return
         }
 
@@ -1932,6 +2000,7 @@ class BackgroundWakeService : Service(),
                 val numberIndex = it.getColumnIndex(
                     ContactsContract.CommonDataKinds.Phone.NUMBER
                 )
+
                 val nameIndex = it.getColumnIndex(
                     ContactsContract.CommonDataKinds.Phone.DISPLAY_NAME
                 )
@@ -2036,12 +2105,14 @@ class BackgroundWakeService : Service(),
                 val whatsappIntent = Intent(intent).apply {
                     setPackage("com.whatsapp")
                 }
+
                 startActivity(whatsappIntent)
             } catch (_: Exception) {
                 try {
                     val businessIntent = Intent(intent).apply {
                         setPackage("com.whatsapp.w4b")
                     }
+
                     startActivity(businessIntent)
                 } catch (_: Exception) {
                     startActivity(intent)
@@ -2082,10 +2153,13 @@ class BackgroundWakeService : Service(),
                 text.contains("goodbye") ||
                 text.contains("go to sleep") -> {
                 conversationMode = false
+
                 conversationTimeoutRunnable?.let {
                     handler.removeCallbacks(it)
                 }
+
                 speak("Goodbye.")
+
                 handler.postDelayed({
                     stopSelf()
                 }, 2000)
@@ -2116,7 +2190,6 @@ class BackgroundWakeService : Service(),
                 resumeMusic()
             }
 
-            // Explicit YouTube or YouTube Music requests
             text.startsWith("play ") &&
                 (text.contains(" on youtube music") ||
                     text.contains(" on youtube")) -> {
@@ -2131,8 +2204,6 @@ class BackgroundWakeService : Service(),
                 playOnYouTube(song, music)
             }
 
-            // Simple music command.
-            // "Play Immortal" opens a YouTube Music search.
             text.startsWith("play ") -> {
                 val song = text.removePrefix("play ").trim()
                 playOnYouTube(song, true)
@@ -2311,6 +2382,7 @@ class BackgroundWakeService : Service(),
 
     private fun parseTimerNumber(value: String): Long? {
         val words = value.replace("-", " ").trim().split(Regex("\\s+"))
+
         if (words.isEmpty()) return null
 
         val smallNumbers = mapOf(
@@ -2321,6 +2393,7 @@ class BackgroundWakeService : Service(),
             "fourteen" to 14L, "fifteen" to 15L, "sixteen" to 16L,
             "seventeen" to 17L, "eighteen" to 18L, "nineteen" to 19L
         )
+
         val tens = mapOf(
             "twenty" to 20L, "thirty" to 30L, "forty" to 40L,
             "fifty" to 50L, "sixty" to 60L, "seventy" to 70L,
@@ -2757,9 +2830,11 @@ class BackgroundWakeService : Service(),
 
         if (app == null) {
             speak("I couldn't find $cleanedName on your phone.")
+
             showMessage(
                 "SIMMY could not find $cleanedName. Check that the app is installed."
             )
+
             return
         }
 
@@ -2829,6 +2904,7 @@ class BackgroundWakeService : Service(),
         conversationTimeoutRunnable?.let {
             handler.removeCallbacks(it)
         }
+
         conversationTimeoutRunnable = null
 
         handler.removeCallbacks(overlayPermissionChecker)
@@ -2848,13 +2924,7 @@ class BackgroundWakeService : Service(),
 
         try {
             destroyOnlineRecognizer()
-
-            speechService?.cancel()
-            speechService?.shutdown()
-            speechService = null
-
-            recognizer?.close()
-            recognizer = null
+            stopVoskListening()
 
             textToSpeech?.stop()
             textToSpeech?.shutdown()
